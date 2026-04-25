@@ -1,0 +1,171 @@
+services:
+  # Neo4j Graph Database
+  - type: pserv
+    name: rca-neo4j
+    runtime: docker
+    plan: starter
+    image: neo4j:5.18-community
+    envVars:
+      - key: NEO4J_AUTH
+        sync: false  # neo4j/password set in dashboard
+      - key: NEO4J_PLUGINS
+        value: '["apoc"]'
+      - key: NEO4J_dbms_memory_heap_max__size
+        value: 512M
+    disk:
+      name: neo4j-data
+      mountPath: /data
+      sizeGB: 10
+    healthCheckPath: /
+    ports:
+      - port: 7474
+        protocol: HTTP
+      - port: 7687
+        protocol: TCP
+
+  # Langfuse Database
+  - type: pserv
+    name: rca-langfuse-db
+    runtime: docker
+    plan: starter
+    image: postgres:15-alpine
+    envVars:
+      - key: POSTGRES_DB
+        value: langfuse
+      - key: POSTGRES_USER
+        value: langfuse
+      - key: POSTGRES_PASSWORD
+        generateValue: true
+    disk:
+      name: langfuse-data
+      mountPath: /var/lib/postgresql/data
+      sizeGB: 5
+
+  # Langfuse Observability
+  - type: web
+    name: rca-langfuse
+    runtime: docker
+    plan: starter
+    image: langfuse/langfuse:latest
+    envVars:
+      - key: DATABASE_URL
+        fromService:
+          name: rca-langfuse-db
+          type: pserv
+          property: connectionString
+      - key: NEXTAUTH_SECRET
+        generateValue: true
+      - key: NEXTAUTH_URL
+        value: https://rca-langfuse.onrender.com
+      - key: SALT
+        generateValue: true
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+    healthCheckPath: /api/health
+
+  # LiteLLM Proxy
+  - type: web
+    name: rca-litellm
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile.litellm
+    envVars:
+      - key: LITELLM_MASTER_KEY
+        generateValue: true
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: KIMI_API_BASE
+        sync: false
+      - key: KIMI_API_KEY
+        sync: false
+      - key: GLM_API_BASE
+        sync: false
+      - key: GLM_API_KEY
+        sync: false
+      - key: LANGFUSE_HOST
+        value: http://rca-langfuse:3000
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+    healthCheckPath: /health
+
+  # Agent Runner (Background Worker)
+  - type: worker
+    name: rca-agent-runner
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile.agents
+    envVars:
+      - key: NEO4J_URI
+        value: bolt://rca-neo4j:7687
+      - key: NEO4J_USER
+        value: neo4j
+      - key: NEO4J_PASSWORD
+        sync: false
+      - key: LITELLM_BASE_URL
+        value: http://rca-litellm:4000
+      - key: LITELLM_API_KEY
+        sync: false  # Must match LITELLM_MASTER_KEY from rca-litellm
+      - key: LITELLM_CLAUDE_MODEL
+        value: claude-critical
+      - key: LITELLM_KIMI_MODEL
+        value: kimi-default
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_REPO
+        value: juspay/hyperswitch
+      - key: GITHUB_LABELS
+        value: rca-discussed,rca-action-item
+      - key: GITHUB_SYNC_INTERVAL_HOURS
+        value: 6
+      - key: STRATEGY_AGENT_CRON
+        value: 0 9 * * 1
+      - key: LANGFUSE_HOST
+        value: http://rca-langfuse:3000
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+      - key: SLACK_WEBHOOK_URL
+        sync: false
+
+  # Dashboard API
+  - type: web
+    name: rca-dashboard-api
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile.dashboard
+    envVars:
+      - key: NEO4J_URI
+        value: bolt://rca-neo4j:7687
+      - key: NEO4J_USER
+        value: neo4j
+      - key: NEO4J_PASSWORD
+        sync: false
+      - key: LANGFUSE_HOST
+        value: http://rca-langfuse:3000
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+      - key: SLACK_WEBHOOK_URL
+        sync: false
+    healthCheckPath: /api/health
+
+  # Dashboard UI
+  - type: web
+    name: rca-render
+    runtime: static
+    plan: starter
+    buildCommand: cd dashboard/ui && npm install && npm run build
+    staticPublishPath: ./dashboard/ui/dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        value: https://rca-dashboard-api.onrender.com
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: no-cache

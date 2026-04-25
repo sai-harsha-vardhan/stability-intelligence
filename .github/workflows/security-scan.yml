@@ -1,0 +1,197 @@
+# Security Scanning Pipeline
+# Runs Trivy container scanner, Snyk dependency scan, and Bandit static analysis
+# on every push and PR to main
+
+name: Security Scan
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run nightly at 2 AM UTC
+    - cron: '0 2 * * *'
+
+jobs:
+  trivy-container-scan:
+    name: Trivy Container Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker images
+        run: |
+          docker build -f Dockerfile.agents -t rca-agents:latest .
+          docker build -f Dockerfile.dashboard -t rca-dashboard:latest .
+
+      - name: Run Trivy vulnerability scanner on agents
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'rca-agents:latest'
+          format: 'sarif'
+          output: 'trivy-agents-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Run Trivy vulnerability scanner on dashboard
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'rca-dashboard:latest'
+          format: 'sarif'
+          output: 'trivy-dashboard-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-agents-results.sarif'
+          category: 'trivy-agents'
+
+      - name: Upload dashboard scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-dashboard-results.sarif'
+          category: 'trivy-dashboard'
+
+      - name: Check for critical vulnerabilities
+        run: |
+          if grep -q '"severity": "CRITICAL"' trivy-agents-results.sarif 2>/dev/null || \
+             grep -q '"severity": "CRITICAL"' trivy-dashboard-results.sarif 2>/dev/null; then
+            echo "❌ CRITICAL vulnerabilities found in container images"
+            exit 1
+          fi
+
+  snyk-dependency-scan:
+    name: Snyk Dependency Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.agents.txt
+          pip install -r requirements.dashboard.txt
+
+      - name: Run Snyk to check for vulnerabilities
+        uses: snyk/actions/python@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --file=requirements.agents.txt
+          command: monitor
+
+      - name: Snyk SAST Scan
+        uses: snyk/actions/python@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high
+
+  bandit-static-analysis:
+    name: Bandit Static Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Bandit
+        run: pip install bandit[toml]
+
+      - name: Run Bandit scan
+        run: |
+          bandit -r . \
+            -f json \
+            -o bandit-results.json \
+            --skip B101,B311 \
+            --exclude ./.venv,./venv,./tests || true
+
+      - name: Check for high-severity issues
+        run: |
+          if [ -f bandit-results.json ]; then
+            high_count=$(jq '.results | map(select(.issue_severity == "HIGH")) | length' bandit-results.json)
+            if [ "$high_count" -gt 0 ]; then
+              echo "❌ Found $high_count HIGH severity security issues"
+              jq '.results | map(select(.issue_severity == "HIGH"))' bandit-results.json
+              exit 1
+            fi
+          fi
+
+      - name: Upload Bandit results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-results
+          path: bandit-results.json
+
+  secrets-detection:
+    name: Secrets Detection
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run secret detection
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: main
+          head: HEAD
+          extra_args: --debug --only-verified
+
+  pip-audit:
+    name: pip-audit Dependency Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Run pip-audit
+        run: |
+          pip-audit -r requirements.agents.txt -r requirements.dashboard.txt \
+            --format=json \
+            --output=pip-audit-results.json \
+            --desc || true
+
+      - name: Check for vulnerabilities
+        run: |
+          if [ -f pip-audit-results.json ]; then
+            vuln_count=$(jq '.dependencies | map(select(.vulns | length > 0)) | length' pip-audit-results.json)
+            if [ "$vuln_count" -gt 0 ]; then
+              echo "⚠️ Found $vuln_count vulnerable dependencies"
+              jq '.dependencies | map(select(.vulns | length > 0)) | map({name: .name, version: .version, vulns: .vulns})' pip-audit-results.json
+              # Don't fail the build, just warn
+            fi
+          fi
+
+      - name: Upload pip-audit results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pip-audit-results
+          path: pip-audit-results.json

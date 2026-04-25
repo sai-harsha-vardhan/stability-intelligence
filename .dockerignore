@@ -1,0 +1,54 @@
+# Ignore Python cache and virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+
+# Ignore test and development files
+.pytest_cache/
+.coverage
+htmlcov/
+tests/
+
+# Ignore logs
+*.log
+logs/
+
+# Ignore git
+.git/
+.gitignore
+
+# Ignore IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Ignore Node modules (for UI)
+node_modules/
+dist/
+
+# Ignore cache and data directories
+github-cache/
+hyperswitch-repo/
+litellm/cache/
+
+# Ignore documentation
+README.md
+BLOCKERS.md
+STATUS.md
+
+# Ignore Docker files themselves
+.dockerignore
+Dockerfile*
+docker-compose*.yml
+
+# Ignore environment files (should be passed at runtime)
+.env
+.env.local

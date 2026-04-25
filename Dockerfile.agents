@@ -1,0 +1,50 @@
+# Multi-stage build for stability-intelligence agent-runner
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install dependencies
+COPY requirements.agents.txt .
+RUN pip install --no-cache-dir --user -r requirements.agents.txt
+
+# Final stage
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy installed packages from builder
+COPY --from=builder /root/.local /root/.local
+
+# Make sure scripts in .local are usable
+ENV PATH=/root/.local/bin:$PATH
+
+# Copy application code
+COPY agents/ /app/agents/
+COPY graph/ /app/graph/
+COPY scripts/ /app/scripts/
+COPY feedback/ /app/feedback/
+COPY scheduler/ /app/scheduler/
+COPY litellm/ /app/litellm/
+COPY .env /app/.env
+
+# Create directories for logs and data
+RUN mkdir -p /app/logs /app/github-cache /app/hyperswitch-repo
+
+# Health check
+HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
+    CMD python -c "import sys; sys.exit(0)"
+
+# Run scheduler (APScheduler with all 4 jobs)
+CMD ["python", "-m", "scheduler.runner"]

@@ -1,0 +1,139 @@
+version: "3.9"
+
+services:
+
+  neo4j:
+    image: neo4j:5.18-community
+    container_name: stability-neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+      NEO4J_dbms_memory_heap_max__size: 2G
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "neo4j", "status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  langfuse-db:
+    image: postgres:15-alpine
+    container_name: stability-langfuse-db
+    environment:
+      POSTGRES_DB: langfuse
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: langfuse_secret
+    volumes:
+      - langfuse_db:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  langfuse:
+    image: langfuse/langfuse:latest
+    container_name: stability-langfuse
+    depends_on: [langfuse-db]
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://langfuse:langfuse_secret@langfuse-db:5432/langfuse
+      NEXTAUTH_SECRET: changeme-nextauth-secret
+      NEXTAUTH_URL: http://localhost:3000
+      SALT: changeme-salt
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
+    restart: unless-stopped
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: stability-litellm
+    ports:
+      - "4000:4000"
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      KIMI_API_BASE: ${KIMI_API_BASE}
+      KIMI_API_KEY: ${KIMI_API_KEY}
+      GLM_API_BASE: ${GLM_API_BASE}
+      GLM_API_KEY: ${GLM_API_KEY}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
+      LANGFUSE_HOST: http://langfuse:3000
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml
+    command: --config /app/config.yaml
+    restart: unless-stopped
+
+  agent-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.agents
+    container_name: stability-agent-runner
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      litellm:
+        condition: service_started
+    environment:
+      - NEO4J_URI=${NEO4J_URI}
+      - NEO4J_USER=${NEO4J_USER}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD}
+      - LITELLM_BASE_URL=${LITELLM_BASE_URL}
+      - LITELLM_API_KEY=${LITELLM_API_KEY}
+      - LITELLM_CLAUDE_MODEL=${LITELLM_CLAUDE_MODEL}
+      - LITELLM_KIMI_MODEL=${LITELLM_KIMI_MODEL}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_REPO=${GITHUB_REPO}
+      - GITHUB_LABELS=${GITHUB_LABELS}
+      - GITHUB_CACHE_DIR=${GITHUB_CACHE_DIR}
+      - DEEPWIKI_MCP_URL=${DEEPWIKI_MCP_URL}
+      - HYPERSWITCH_REPO_PATH=${HYPERSWITCH_REPO_PATH}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_HOST=${LANGFUSE_HOST}
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
+      - GITHUB_SYNC_INTERVAL_HOURS=${GITHUB_SYNC_INTERVAL_HOURS}
+      - STRATEGY_AGENT_CRON=${STRATEGY_AGENT_CRON}
+    volumes:
+      - ./hyperswitch-repo:/app/hyperswitch-repo
+      - ./github-cache:/app/github-cache
+      - agent_logs:/app/logs
+    restart: unless-stopped
+
+  dashboard-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    container_name: stability-dashboard-api
+    depends_on: [neo4j, agent-runner]
+    ports:
+      - "8000:8000"
+    environment:
+      - NEO4J_URI=${NEO4J_URI}
+      - NEO4J_USER=${NEO4J_USER}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
+    restart: unless-stopped
+
+  dashboard-ui:
+    build:
+      context: ./dashboard/ui
+      dockerfile: Dockerfile
+    container_name: stability-dashboard-ui
+    depends_on: [dashboard-api]
+    ports:
+      - "${DASHBOARD_PORT}:80"
+    restart: unless-stopped
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
+  langfuse_db:
+  agent_logs:

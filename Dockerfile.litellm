@@ -1,0 +1,10 @@
+FROM ghcr.io/berriai/litellm:main-latest
+
+# Copy the config file into the image
+COPY litellm/config.yaml /app/config.yaml
+
+# Expose the port
+EXPOSE 4000
+
+# Start litellm with the config
+ENTRYPOINT ["litellm", "--config", "/app/config.yaml"]
