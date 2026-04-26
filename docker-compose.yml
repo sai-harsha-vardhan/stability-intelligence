@@ -87,7 +87,6 @@ services:
       - LITELLM_API_KEY=${LITELLM_API_KEY}
       - LITELLM_CLAUDE_MODEL=${LITELLM_CLAUDE_MODEL}
       - LITELLM_KIMI_MODEL=${LITELLM_KIMI_MODEL}
-      - GITHUB_TOKEN=${GITHUB_TOKEN}
       - GITHUB_REPO=${GITHUB_REPO}
       - GITHUB_LABELS=${GITHUB_LABELS}
       - GITHUB_CACHE_DIR=${GITHUB_CACHE_DIR}
@@ -103,6 +102,7 @@ services:
       - ./hyperswitch-repo:/app/hyperswitch-repo
       - ./github-cache:/app/github-cache
       - agent_logs:/app/logs
+      - ~/.config/gh:/root/.config/gh:ro
     restart: unless-stopped
 
   dashboard-api:

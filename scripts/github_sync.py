@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-GitHub Issue Sync Script
+GitHub Issue Sync Script - GitHub CLI Edition
 
 Provides bulk and incremental sync of GitHub issues with specific labels:
 - rca-discussed
 - rca-action-item  
 - incident-reported
+
+Uses GitHub CLI (gh) for all API operations.
 
 Usage:
     python github_sync.py bulk          # Full sync
@@ -13,7 +15,6 @@ Usage:
     python github_sync.py load          # Load cached issues
 
 Environment:
-    GITHUB_TOKEN - GitHub personal access token
     GITHUB_REPO - Repository (default: juspay/hyperswitch)
     GITHUB_LABELS - Comma-separated labels to sync
     GITHUB_CACHE_DIR - Cache directory (default: /app/github-cache)
@@ -21,12 +22,11 @@ Environment:
 
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
-import urllib.request
-import urllib.error
 
 
 DEFAULT_REPO = "juspay/hyperswitch"
@@ -38,11 +38,6 @@ STATE_FILE = "sync_state.json"
 def get_env_var(name: str, default: Optional[str] = None) -> Optional[str]:
     """Get environment variable with optional default."""
     return os.environ.get(name, default)
-
-
-def get_github_token() -> Optional[str]:
-    """Get GitHub token from environment."""
-    return get_env_var("GITHUB_TOKEN")
 
 
 def get_repo() -> str:
@@ -85,95 +80,156 @@ def save_sync_state(state: Dict) -> None:
         json.dump(state, f, indent=2)
 
 
-def github_api_request(url: str, token: Optional[str] = None) -> Dict:
-    """Make authenticated GitHub API request."""
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    
-    req = urllib.request.Request(url, headers=headers)
+def run_gh_command(args: List[str], repo: str) -> Dict:
+    """Execute a gh CLI command and return JSON output."""
+    cmd = ["gh"] + args + ["--repo", repo]
     
     try:
-        with urllib.request.urlopen(req, timeout=30) as response:
-            return json.loads(response.read().decode())
-    except urllib.error.HTTPError as e:
-        if e.code == 401:
-            raise PermissionError("Invalid GitHub token")
-        elif e.code == 404:
-            raise FileNotFoundError(f"Resource not found: {url}")
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=True
+        )
+        return json.loads(result.stdout) if result.stdout else {}
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"gh command timed out: {' '.join(cmd)}")
+    except subprocess.CalledProcessError as e:
+        error_msg = e.stderr.lower() if e.stderr else ""
+        if "401" in error_msg or "authentication" in error_msg:
+            raise PermissionError("GitHub authentication failed. Run 'gh auth login'")
+        elif "404" in error_msg:
+            raise FileNotFoundError(f"Resource not found in {repo}")
         else:
-            raise RuntimeError(f"GitHub API error: {e.code} - {e.reason}")
-    except urllib.error.URLError as e:
-        raise ConnectionError(f"Failed to connect to GitHub: {e.reason}")
+            raise RuntimeError(f"gh command failed: {e.stderr or e.stdout}")
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Failed to parse gh output as JSON: {e}")
 
 
-def fetch_issues(repo: str, labels: List[str], token: Optional[str] = None, 
+def fetch_issues(repo: str, labels: List[str],
                  since: Optional[str] = None, state: str = "all") -> List[Dict]:
-    """Fetch issues from GitHub API with pagination."""
+    """Fetch issues from GitHub using gh CLI with pagination."""
     issues = []
-    page = 1
-    per_page = 100
     
-    labels_param = ",".join(labels)
-    base_url = f"https://api.github.com/repos/{repo}/issues"
+    # Build label filter
+    label_filter = ",".join(labels)
     
-    while True:
-        params = [
-            f"state={state}",
-            f"labels={labels_param}",
-            f"per_page={per_page}",
-            f"page={page}",
-        ]
-        if since:
-            params.append(f"since={since}")
+    # gh issue list only supports open/closed, not "all"
+    # We'll fetch both and combine
+    states_to_fetch = ["open", "closed"] if state == "all" else [state]
+    
+    for issue_state in states_to_fetch:
+        page = 1
+        per_page = 100
         
-        url = f"{base_url}?{'&'.join(params)}"
-        
-        print(f"Fetching page {page}...")
-        page_issues = github_api_request(url, token)
-        
-        if not page_issues:
-            break
-        
-        issues.extend(page_issues)
-        
-        if len(page_issues) < per_page:
-            break
-        
-        page += 1
-        
-        if page > 100:  # Safety limit
-            print(f"Warning: Reached safety limit at {len(issues)} issues")
-            break
+        while True:
+            print(f"Fetching {issue_state} issues page {page}...")
+            
+            # Build gh issue list command
+            args = [
+                "issue", "list",
+                "--state", issue_state,
+                "--label", label_filter,
+                "--limit", str(per_page),
+                "--json", "number,title,body,state,createdAt,updatedAt,closedAt,labels,user,assignees,milestone,comments"
+            ]
+            
+            if since and issue_state != "closed":
+                # gh doesn't support since parameter directly
+                # We'll filter client-side
+                pass
+            
+            try:
+                page_issues = run_gh_command(args, repo)
+            except RuntimeError as e:
+                if "no issues" in str(e).lower() or "not found" in str(e).lower():
+                    page_issues = []
+                else:
+                    raise
+            
+            if not page_issues:
+                break
+            
+            # Convert gh CLI field names to match old API format
+            for issue in page_issues:
+                converted = {
+                    "number": issue["number"],
+                    "title": issue["title"],
+                    "body": issue.get("body", ""),
+                    "state": issue["state"],
+                    "created_at": issue["createdAt"],
+                    "updated_at": issue["updatedAt"],
+                    "closed_at": issue.get("closedAt"),
+                    "labels": [{"name": label["name"]} for label in issue.get("labels", [])],
+                    "user": issue.get("user", {}),
+                    "assignees": issue.get("assignees", []),
+                    "milestone": issue.get("milestone"),
+                    "comments": issue.get("comments", 0),
+                }
+                
+                # Filter by since date if provided
+                if since:
+                    issue_updated = datetime.fromisoformat(converted["updated_at"].replace("Z", "+00:00"))
+                    since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+                    if issue_updated >= since_dt:
+                        issues.append(converted)
+                else:
+                    issues.append(converted)
+            
+            if len(page_issues) < per_page:
+                break
+            
+            page += 1
+            
+            if page > 100:  # Safety limit
+                print(f"Warning: Reached safety limit at {len(issues)} issues")
+                break
     
     return issues
 
 
-def fetch_issue_comments(repo: str, issue_number: int, 
-                         token: Optional[str] = None) -> List[Dict]:
-    """Fetch comments for a specific issue."""
-    url = f"https://api.github.com/repos/{repo}/issues/{issue_number}/comments"
-    
+def fetch_issue_comments(repo: str, issue_number: int) -> List[Dict]:
+    """Fetch comments for a specific issue using gh CLI."""
     try:
-        return github_api_request(url, token)
+        args = [
+            "api",
+            f"repos/{repo}/issues/{issue_number}/comments",
+            "--paginate"
+        ]
+        comments = run_gh_command(args, repo)
+        
+        if not isinstance(comments, list):
+            return []
+        
+        # Normalize field names
+        return [{
+            "id": c["id"],
+            "body": c.get("body", ""),
+            "user": c.get("user", {}),
+            "created_at": c["created_at"],
+        } for c in comments]
     except Exception as e:
         print(f"Warning: Failed to fetch comments for issue #{issue_number}: {e}")
         return []
 
 
-def fetch_linked_issues(repo: str, issue_number: int,
-                        token: Optional[str] = None) -> List[int]:
+def fetch_linked_issues(repo: str, issue_number: int) -> List[int]:
     """
-    Fetch linked issues using timeline API.
+    Fetch linked issues using timeline API via gh CLI.
     Returns list of linked issue numbers.
     """
-    url = f"https://api.github.com/repos/{repo}/issues/{issue_number}/timeline"
-    
     try:
-        events = github_api_request(url, token)
+        args = [
+            "api",
+            f"repos/{repo}/issues/{issue_number}/timeline",
+            "--paginate"
+        ]
+        events = run_gh_command(args, repo)
+        
+        if not isinstance(events, list):
+            return []
+        
         linked = []
         for event in events:
             if event.get("event") in ["cross-referenced", "connected"]:
@@ -191,6 +247,10 @@ def transform_issue(issue: Dict, comments: List[Dict], linked_issues: List[int])
     """Transform GitHub issue into internal format."""
     labels = [label["name"] for label in issue.get("labels", [])]
     
+    user = issue.get("user", {}) or {}
+    assignees = issue.get("assignees", []) or []
+    milestone = issue.get("milestone")
+    
     transformed = {
         "github_issue_number": issue["number"],
         "title": issue["title"],
@@ -200,15 +260,15 @@ def transform_issue(issue: Dict, comments: List[Dict], linked_issues: List[int])
         "updated_at": issue["updated_at"],
         "closed_at": issue.get("closed_at"),
         "labels": labels,
-        "author": issue["user"]["login"] if issue.get("user") else None,
-        "assignees": [u["login"] for u in issue.get("assignees", [])],
-        "milestone": issue["milestone"]["title"] if issue.get("milestone") else None,
+        "author": user.get("login") if user else None,
+        "assignees": [u.get("login") for u in assignees if u],
+        "milestone": milestone.get("title") if isinstance(milestone, dict) else milestone,
         "comments_count": issue.get("comments", 0),
         "comments": [
             {
                 "id": c["id"],
-                "author": c["user"]["login"] if c.get("user") else None,
-                "body": c["body"] or "",
+                "author": c.get("user", {}).get("login") if c.get("user") else None,
+                "body": c.get("body", "") or "",
                 "created_at": c["created_at"],
             }
             for c in comments
@@ -234,7 +294,7 @@ def infer_issue_type(labels: List[str]) -> str:
 
 
 def generate_mock_issues() -> List[Dict]:
-    """Generate sample mock issues for testing without GitHub token."""
+    """Generate sample mock issues for testing without GitHub access."""
     now = datetime.now(timezone.utc).isoformat()
     yesterday = datetime.now(timezone.utc).isoformat()
     
@@ -378,7 +438,29 @@ def save_issues_jsonl(issues: List[Dict], cache_dir: Path, suffix: str = "") -> 
     return filepath
 
 
-def bulk_sync(token: Optional[str] = None) -> List[Dict]:
+def check_gh_installed() -> bool:
+    """Check if gh CLI is installed and accessible."""
+    try:
+        subprocess.run(["gh", "--version"], capture_output=True, check=True)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+
+def check_gh_authenticated() -> bool:
+    """Check if gh CLI is authenticated."""
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "status"],
+            capture_output=True,
+            text=True
+        )
+        return result.returncode == 0 and "Logged in" in result.stdout
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+
+def bulk_sync() -> List[Dict]:
     """
     Perform bulk sync of all GitHub issues with target labels.
     
@@ -394,8 +476,10 @@ def bulk_sync(token: Optional[str] = None) -> List[Dict]:
     print(f"Starting bulk sync for {repo}")
     print(f"Target labels: {labels}")
     
-    if not token:
-        print("WARNING: No GITHUB_TOKEN found. Using mock data.")
+    # Check gh CLI availability
+    if not check_gh_installed():
+        print("WARNING: gh CLI not found. Using mock data.")
+        print("Install gh CLI: https://cli.github.com/")
         issues = generate_mock_issues()
         
         # Group by label for reporting
@@ -424,9 +508,40 @@ def bulk_sync(token: Optional[str] = None) -> List[Dict]:
         
         return issues
     
-    # Real GitHub API sync
-    print("Fetching issues from GitHub API...")
-    raw_issues = fetch_issues(repo, labels, token)
+    if not check_gh_authenticated():
+        print("WARNING: gh CLI not authenticated. Using mock data.")
+        print("Authenticate with: gh auth login")
+        issues = generate_mock_issues()
+        
+        # Group by label for reporting
+        label_counts = {}
+        for issue in issues:
+            for label in issue["labels"]:
+                if label in labels:
+                    label_counts[label] = label_counts.get(label, 0) + 1
+        
+        print(f"\nMock issues generated: {len(issues)}")
+        for label, count in label_counts.items():
+            print(f"  - {label}: {count}")
+        
+        filepath = save_issues_jsonl(issues, cache_dir, "_mock")
+        print(f"Saved to: {filepath}")
+        
+        # Update sync state
+        state = load_sync_state()
+        state["last_sync"] = datetime.now(timezone.utc).isoformat()
+        state["repos"][repo] = {
+            "last_full_sync": state["last_sync"],
+            "issue_count": len(issues),
+            "mock": True,
+        }
+        save_sync_state(state)
+        
+        return issues
+    
+    # Real GitHub sync via gh CLI
+    print("Fetching issues from GitHub using gh CLI...")
+    raw_issues = fetch_issues(repo, labels)
     print(f"Fetched {len(raw_issues)} issues")
     
     transformed_issues = []
@@ -436,10 +551,10 @@ def bulk_sync(token: Optional[str] = None) -> List[Dict]:
         print(f"Processing issue #{issue_num} ({i+1}/{len(raw_issues)})...")
         
         # Fetch comments
-        comments = fetch_issue_comments(repo, issue_num, token)
+        comments = fetch_issue_comments(repo, issue_num)
         
         # Fetch linked issues
-        linked = fetch_linked_issues(repo, issue_num, token)
+        linked = fetch_linked_issues(repo, issue_num)
         
         # Transform
         transformed = transform_issue(issue, comments, linked)
@@ -473,7 +588,7 @@ def bulk_sync(token: Optional[str] = None) -> List[Dict]:
     return transformed_issues
 
 
-def incremental_sync(token: Optional[str] = None) -> List[Dict]:
+def incremental_sync() -> List[Dict]:
     """
     Perform incremental sync since last sync timestamp.
     
@@ -492,9 +607,15 @@ def incremental_sync(token: Optional[str] = None) -> List[Dict]:
     print(f"Starting incremental sync for {repo}")
     print(f"Last sync: {last_sync or 'Never'}")
     
-    if not token:
-        print("WARNING: No GITHUB_TOKEN found. Cannot perform incremental sync.")
+    # Check gh CLI availability
+    if not check_gh_installed():
+        print("WARNING: gh CLI not found. Cannot perform incremental sync.")
         print("Run 'bulk' sync to generate mock data.")
+        return []
+    
+    if not check_gh_authenticated():
+        print("WARNING: gh CLI not authenticated. Cannot perform incremental sync.")
+        print("Authenticate with: gh auth login")
         return []
     
     if not last_sync:
@@ -503,7 +624,7 @@ def incremental_sync(token: Optional[str] = None) -> List[Dict]:
     
     # Fetch issues updated since last sync
     print(f"Fetching issues updated since {last_sync}...")
-    raw_issues = fetch_issues(repo, labels, token, since=last_sync)
+    raw_issues = fetch_issues(repo, labels, since=last_sync)
     print(f"Fetched {len(raw_issues)} updated issues")
     
     if not raw_issues:
@@ -518,8 +639,8 @@ def incremental_sync(token: Optional[str] = None) -> List[Dict]:
         issue_num = issue["number"]
         print(f"Processing issue #{issue_num} ({i+1}/{len(raw_issues)})...")
         
-        comments = fetch_issue_comments(repo, issue_num, token)
-        linked = fetch_linked_issues(repo, issue_num, token)
+        comments = fetch_issue_comments(repo, issue_num)
+        linked = fetch_linked_issues(repo, issue_num)
         transformed = transform_issue(issue, comments, linked)
         transformed_issues.append(transformed)
     
@@ -598,14 +719,13 @@ def main():
         sys.exit(1)
     
     command = sys.argv[1].lower()
-    token = get_github_token()
     
     if command == "bulk":
-        issues = bulk_sync(token)
+        issues = bulk_sync()
         print(f"\nSync complete. Total issues: {len(issues)}")
         
     elif command == "incremental":
-        issues = incremental_sync(token)
+        issues = incremental_sync()
         print(f"\nIncremental sync complete. New/updated issues: {len(issues)}")
         
     elif command == "load":
