@@ -4,6 +4,12 @@ model_list:
       model: anthropic/claude-sonnet-4-6
       api_key: os.environ/ANTHROPIC_API_KEY
 
+  - model_name: opencode-default
+    litellm_params:
+      model: openai/gpt-4o
+      api_base: https://api.opencode.ai/v1
+      api_key: os.environ/OPENCODE_API_KEY
+
   - model_name: kimi-default
     litellm_params:
       model: openai/kimi-latest
