@@ -2,9 +2,9 @@ import React, { useState, useEffect, useCallback } from 'react'
 import './App.css'
 import './styles/design-system.css'
 import GraphView from './components/GraphView'
-import PriorityRanking from './components/PriorityRanking'
-import PatternBoard from './components/PatternBoard'
-import ProgressTracker from './components/ProgressTracker'
+import PrioritiesSection from './components/PrioritiesSection'
+import PatternsSection from './components/PatternsSection'
+import ProgressSection from './components/ProgressSection'
 import AgentActivity from './components/AgentActivity'
 import ChangeFeed from './components/ChangeFeed'
 import SystemHealth from './components/SystemHealth'
@@ -145,11 +145,6 @@ function App() {
               <ChangeFeed />
             </div>
             <div className="grid-row">
-              <PriorityRanking limit={10} />
-              <PatternBoard limit={6} />
-            </div>
-            <div className="grid-row">
-              <ProgressTracker limit={10} />
               <AgentActivity limit={10} />
             </div>
           </div>
@@ -157,11 +152,11 @@ function App() {
       case 'graph':
         return <GraphView />
       case 'priorities':
-        return <PriorityRanking />
+        return <PrioritiesSection />
       case 'patterns':
-        return <PatternBoard />
+        return <PatternsSection />
       case 'progress':
-        return <ProgressTracker />
+        return <ProgressSection />
       case 'activity':
         return <AgentActivity />
       case 'changes':
