@@ -112,7 +112,14 @@ SKIP $skip LIMIT $limit
 
 GET_ACTIVITY_EVENTS = """
 MATCH (ae:ActivityEvent)
-RETURN ae {.id, .agent_name, .event_type, .message, .details, .created_at}
+RETURN ae.id AS id,
+       ae.agent_name AS agent_name,
+       ae.event_type AS event_type,
+       ae.message AS message,
+       ae.details AS details,
+       ae.linked_node_id AS linked_node_id,
+       ae.linked_node_type AS linked_node_type,
+       ae.created_at AS created_at
 ORDER BY ae.created_at DESC
 SKIP $skip LIMIT $limit
 """
@@ -142,15 +149,15 @@ MATCH (ai:ActionItem {status: 'open'})
 OPTIONAL MATCH (ai)-[:BLOCKS_PATTERN]->(pc:PatternCluster)
 RETURN ai.id AS id,
        ai.title AS title,
-       ai.description AS description,
-       ai.priority_score AS priority_score,
-       ai.forward_score AS forward_score,
-       ai.backward_score AS backward_score,
-       ai.blocking_multiplier AS blocking_multiplier,
+       COALESCE(ai.description, ai.body, '') AS description,
+       COALESCE(ai.priority_score, 0.0) AS priority_score,
+       COALESCE(ai.forward_score, 0) AS forward_score,
+       COALESCE(ai.backward_score, 0) AS backward_score,
+       COALESCE(ai.blocking_multiplier, 1.0) AS blocking_multiplier,
        ai.implementation_complexity AS implementation_complexity,
        ai.stagger_safe AS stagger_safe,
        collect(pc.name) AS pattern_clusters
-ORDER BY ai.priority_score DESC
+ORDER BY COALESCE(ai.priority_score, 0.0) DESC
 LIMIT $limit
 """
 
@@ -159,13 +166,14 @@ MATCH (s:Strategy)
 WHERE s.status IN ['proposed', 'implemented']
 RETURN s.id AS id,
        s.title AS title,
-       s.description AS description,
-       s.priority_score AS priority_score,
-       s.forward_score AS forward_score,
-       s.backward_score AS backward_score,
+       COALESCE(s.description, s.body, '') AS description,
+       COALESCE(s.priority_score, 0.0) AS priority_score,
+       COALESCE(s.forward_score, 0) AS forward_score,
+       COALESCE(s.backward_score, 0) AS backward_score,
+       COALESCE(s.blocking_multiplier, 1.0) AS blocking_multiplier,
        s.estimated_reduction_percent AS estimated_reduction,
        s.status AS status
-ORDER BY s.priority_score DESC
+ORDER BY COALESCE(s.priority_score, 0.0) DESC
 LIMIT $limit
 """
 

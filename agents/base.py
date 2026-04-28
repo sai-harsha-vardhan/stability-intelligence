@@ -1,6 +1,7 @@
 """Base agent class with common utilities."""
 import os
 import uuid
+import json
 import logging
 from typing import Optional, Dict, Any, List
 
@@ -124,6 +125,9 @@ class BaseAgent:
         """Log an activity event to the graph."""
         event_id = f"evt-{uuid.uuid4().hex[:12]}"
         
+        # Convert details dict to JSON string (Neo4j doesn't support nested objects as properties)
+        details_json = json.dumps(data or {})
+        
         cypher = """
         CREATE (ae:ActivityEvent {
             id: $id,
@@ -144,7 +148,7 @@ class BaseAgent:
             "agent_name": self.name,
             "event_type": "agent_run",
             "message": message,
-            "details": data or {},
+            "details": details_json,
             "linked_node_id": linked_node_id,
             "linked_node_type": linked_node_type,
         })

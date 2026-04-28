@@ -1,10 +1,12 @@
 """APScheduler runner for Stability Intelligence System.
 
-Manages 4 scheduled jobs:
+Manages 6 scheduled jobs:
 1. github_sync - every N hours (configured via GITHUB_SYNC_INTERVAL_HOURS)
-2. strategy_agent - weekly on Monday 09:00 (configured via STRATEGY_AGENT_CRON)
-3. feedback_loop - daily
-4. health_check - every 5 minutes
+2. rca_agent - every 1 hour (analyzes incidents and detects patterns)
+3. priority_agent - every 2 hours (scores ActionItems by priority)
+4. strategy_agent - weekly on Monday 09:00 (configured via STRATEGY_AGENT_CRON)
+5. feedback_loop - daily
+6. health_check - every 5 minutes
 
 On first run, performs bootstrap:
 - Bulk sync if no cache
@@ -15,7 +17,7 @@ import os
 import sys
 import logging
 import signal
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -28,6 +30,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from graph.client import get_client, close_client
 from scheduler.health import HealthMonitor, format_health_report
+from scripts.transform_issues_to_graph import transform_issues_to_graph
+from agents.rca_agent import RCAAgent
 
 logger = logging.getLogger(__name__)
 
@@ -62,16 +66,45 @@ class SchedulerRunner:
         self.scheduler.shutdown(wait=True)
     
     def _job_listener(self, event: JobExecutionEvent):
-        """Listen for job events and log results."""
+        """Enhanced logging for job events with detailed execution info."""
+        job_id = event.job_id
+        timestamp = datetime.now().isoformat()
+        
         if event.exception:
-            logger.error(f"Job {event.job_id} failed: {event.exception}")
+            # Log error with full traceback
+            import traceback
+            error_traceback = ''.join(traceback.format_exception(
+                type(event.exception), 
+                event.exception, 
+                event.exception.__traceback__
+            ))
+            
+            logger.error(
+                f"❌ Job {job_id} FAILED at {timestamp}\n"
+                f"Exception: {event.exception}\n"
+                f"Traceback:\n{error_traceback}"
+            )
+            
+            # Send alert (logs only, no Slack unless configured)
             self.health_monitor.send_alert(
                 f"Scheduled job '{event.job_id}' failed: {event.exception}",
                 level="error",
-                details={"job_id": event.job_id, "exception": str(event.exception)},
+                details={
+                    "job_id": event.job_id, 
+                    "exception": str(event.exception),
+                    "timestamp": timestamp
+                },
             )
         else:
-            logger.info(f"Job {event.job_id} completed successfully")
+            # Log success with duration if available
+            duration_info = ""
+            if hasattr(event, 'scheduled_run_time') and hasattr(event, 'retval'):
+                # Calculate execution time if we have the start time
+                pass  # APScheduler doesn't directly provide duration
+            
+            logger.info(
+                f"✅ Job {job_id} completed successfully at {timestamp}{duration_info}"
+            )
     
     def setup_jobs(self):
         """Configure all scheduled jobs."""
@@ -85,7 +118,27 @@ class SchedulerRunner:
         )
         logger.info(f"Scheduled github_sync every {self.github_interval_hours} hours")
         
-        # 2. Strategy agent - cron based
+        # 2. RCA agent - every 1 hour
+        self.scheduler.add_job(
+            self.run_rca_agent,
+            trigger=IntervalTrigger(hours=1),
+            id="rca_agent",
+            name="RCA Analysis Agent",
+            replace_existing=True,
+        )
+        logger.info("Scheduled rca_agent every 1 hour")
+        
+        # 3. Priority agent - every 2 hours
+        self.scheduler.add_job(
+            self.run_priority_agent,
+            trigger=IntervalTrigger(hours=2),
+            id="priority_agent",
+            name="Priority Estimation Agent",
+            replace_existing=True,
+        )
+        logger.info("Scheduled priority_agent every 2 hours")
+        
+        # 4. Strategy agent - cron based
         cron_parts = self.strategy_cron.split()
         self.scheduler.add_job(
             self.run_strategy_agent,
@@ -102,7 +155,7 @@ class SchedulerRunner:
         )
         logger.info(f"Scheduled strategy_agent with cron: {self.strategy_cron}")
         
-        # 3. Feedback loop - daily
+        # 5. Feedback loop - daily
         self.scheduler.add_job(
             self.run_feedback_loop,
             trigger=IntervalTrigger(hours=24),
@@ -112,7 +165,7 @@ class SchedulerRunner:
         )
         logger.info("Scheduled feedback_loop daily")
         
-        # 4. Health check - every 5 minutes
+        # 6. Health check - every 5 minutes
         self.scheduler.add_job(
             self.run_health_check,
             trigger=IntervalTrigger(minutes=5),
@@ -121,6 +174,16 @@ class SchedulerRunner:
             replace_existing=True,
         )
         logger.info("Scheduled health_check every 5 minutes")
+        
+        # 7. Detailed health check with data validation - every 1 hour
+        self.scheduler.add_job(
+            self.run_health_check_detailed,
+            trigger=IntervalTrigger(hours=1),
+            id="health_check_detailed",
+            name="Detailed Health Check",
+            replace_existing=True,
+        )
+        logger.info("Scheduled health_check_detailed every 1 hour")
         
         # Add event listener
         self.scheduler.add_listener(self._job_listener, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR)
@@ -172,6 +235,11 @@ class SchedulerRunner:
                 count = incremental_sync()
                 logger.info(f"Incremental sync complete: {count} issues synced")
             
+            # Transform synced issues to graph
+            logger.info("Transforming issues to graph nodes...")
+            stats = transform_issues_to_graph()
+            logger.info(f"Transformation complete: {stats}")
+            
             return count
         except Exception as e:
             logger.error(f"GitHub sync failed: {e}")
@@ -191,6 +259,19 @@ class SchedulerRunner:
             logger.error(f"Tree-sitter parse failed: {e}")
             raise
     
+    def run_rca_agent(self):
+        """Run the RCA analysis agent."""
+        logger.info("Running RCA agent...")
+        
+        try:
+            agent = RCAAgent()
+            stats = agent.run()
+            logger.info(f"RCA agent complete: {stats}")
+            return stats
+        except Exception as e:
+            logger.error(f"RCA agent failed: {e}")
+            raise
+    
     def run_strategy_agent(self):
         """Run the strategy agent."""
         logger.info("Running strategy agent...")
@@ -204,6 +285,22 @@ class SchedulerRunner:
             logger.warning("Strategy agent not yet implemented, skipping")
         except Exception as e:
             logger.error(f"Strategy agent failed: {e}")
+            raise
+    
+    def run_priority_agent(self):
+        """Run the priority estimation agent."""
+        logger.info("Running priority agent...")
+        
+        try:
+            from agents.priority_agent import PriorityAgent
+            agent = PriorityAgent()
+            result = agent.run()
+            logger.info(f"Priority agent complete: {result.get('action_items_scored', 0)} items scored")
+            return result
+        except ImportError:
+            logger.warning("Priority agent not yet implemented, skipping")
+        except Exception as e:
+            logger.error(f"Priority agent failed: {e}")
             raise
     
     def run_feedback_loop(self):
@@ -234,6 +331,73 @@ class SchedulerRunner:
             logger.debug("All health checks passed")
         
         return statuses
+    
+    def run_health_check_detailed(self):
+        """Run detailed health check with data validation.
+        
+        Performs comprehensive system validation including:
+        - Data quality (no mock data, proper incident counts)
+        - GitHub sync status
+        - Scheduler job execution
+        - Agent activity monitoring
+        """
+        logger.info("Running detailed health check...")
+        
+        try:
+            from scripts.health_check import (
+                check_data_quality,
+                check_github_sync,
+                check_scheduler_jobs,
+                check_agent_execution
+            )
+            
+            # Run all checks
+            data_health = check_data_quality()
+            sync_health = check_github_sync()
+            scheduler_health = check_scheduler_jobs()
+            agent_health = check_agent_execution()
+            
+            # Aggregate results
+            all_healthy = (
+                data_health.get("healthy", False) and
+                sync_health.get("healthy", False) and
+                scheduler_health.get("healthy", False) and
+                agent_health.get("healthy", False)
+            )
+            
+            # Log results
+            if not all_healthy:
+                issues = []
+                if not data_health.get("healthy", False):
+                    issues.append(f"Data Quality: mock_count={data_health.get('mock_data_count', 0)}, incidents={data_health.get('total_incidents', 0)}")
+                if not sync_health.get("healthy", False):
+                    issues.append(f"GitHub Sync: status={sync_health.get('status', 'unknown')}")
+                if not scheduler_health.get("healthy", False):
+                    issues.append(f"Scheduler: {scheduler_health.get('recent_errors_count', 0)} errors")
+                if not agent_health.get("healthy", False):
+                    issues.append(f"Agents: status={agent_health.get('status', 'unknown')}")
+                
+                logger.warning(
+                    f"⚠️ HEALTH CHECK FAILED:\n  " + "\n  ".join(issues)
+                )
+            else:
+                logger.info(
+                    f"✅ Detailed health check passed - "
+                    f"incidents={data_health.get('total_incidents', 0)}, "
+                    f"sync_status={sync_health.get('status', 'unknown')}, "
+                    f"agents={agent_health.get('status', 'unknown')}"
+                )
+            
+            return {
+                "healthy": all_healthy,
+                "data_quality": data_health,
+                "github_sync": sync_health,
+                "scheduler": scheduler_health,
+                "agents": agent_health,
+            }
+        except Exception as e:
+            logger.error(f"Detailed health check failed: {e}")
+            raise
     
     def start(self):
         """Start the scheduler."""

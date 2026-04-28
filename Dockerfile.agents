@@ -46,7 +46,7 @@ COPY scripts/ /app/scripts/
 COPY feedback/ /app/feedback/
 COPY scheduler/ /app/scheduler/
 COPY litellm/ /app/litellm/
-COPY .env /app/.env
+COPY src/ /app/src/
 
 # Create directories for logs and data
 RUN mkdir -p /app/logs /app/github-cache /app/hyperswitch-repo

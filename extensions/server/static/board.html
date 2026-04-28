@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Board Dashboard - Paperclip</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html {
+            color-scheme: dark;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #18181b;
+            color: #fafafa;
+            line-height: 1.6;
+        }
+        header {
+            background: #27272a;
+            border-bottom: 1px solid #3f3f46;
+            padding: 1.5rem 2rem;
+        }
+        header h1 {
+            font-size: 1.5em;
+            margin-bottom: 0.25rem;
+            font-weight: 600;
+            color: #fafafa;
+        }
+        header p {
+            font-size: 0.9em;
+            color: #a1a1aa;
+        }
+        main {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        section {
+            background: #27272a;
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            border: 1px solid #3f3f46;
+        }
+        section h2 {
+            font-size: 1.1em;
+            margin-bottom: 1rem;
+            font-weight: 600;
+            color: #fafafa;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .section-title {
+            flex: 1;
+        }
+        .counter {
+            background: #3f3f46;
+            padding: 0.25rem 0.75rem;
+            border-radius: 6px;
+            font-size: 0.85em;
+            color: #a1a1aa;
+            font-weight: 500;
+        }
+        .issue-list {
+            list-style: none;
+        }
+        .issue-item {
+            padding: 1rem;
+            border-bottom: 1px solid #3f3f46;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: background 0.15s;
+        }
+        .issue-item:last-child {
+            border-bottom: none;
+        }
+        .issue-item:hover {
+            background: #2a2a2e;
+        }
+        .issue-item a {
+            display: flex;
+            flex: 1;
+            min-width: 0;
+        }
+        .issue-item a:hover .issue-title {
+            text-decoration: underline;
+        }
+        .issue-info {
+            flex: 1;
+            min-width: 0;
+        }
+        .issue-id {
+            font-weight: 600;
+            color: #a78bfa;
+            margin-right: 0.75rem;
+            font-size: 0.9em;
+        }
+        .issue-title {
+            color: #e4e4e7;
+            font-size: 0.95em;
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 0.35rem 0.75rem;
+            border-radius: 6px;
+            font-size: 0.8em;
+            font-weight: 500;
+            margin-left: 1rem;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        .status-in-review {
+            background: #7c2d12;
+            color: #fed7aa;
+        }
+        .status-blocked {
+            background: #7f1d1d;
+            color: #fca5a5;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 2rem;
+            color: #71717a;
+        }
+        .empty-state-icon {
+            font-size: 2.5em;
+            margin-bottom: 0.5rem;
+        }
+        .loading {
+            text-align: center;
+            padding: 2rem;
+            color: #71717a;
+        }
+        footer {
+            text-align: center;
+            padding: 1.5rem;
+            color: #71717a;
+            font-size: 0.85em;
+            border-top: 1px solid #3f3f46;
+            margin-top: 2rem;
+        }
+        .error {
+            background: #7c2d12;
+            color: #fed7aa;
+            padding: 1rem;
+            border-radius: 6px;
+            border-left: 4px solid #fb923c;
+        }
+        .digest-content {
+            padding: 1rem;
+            background: #1f1f23;
+            border-radius: 6px;
+            font-size: 0.9em;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            overflow-x: auto;
+            border: 1px solid #3f3f46;
+            color: #d4d4d8;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .escalation-item {
+            padding: 0.75rem;
+            background: #1f1f23;
+            border-left: 3px solid #f97316;
+            margin-bottom: 0.5rem;
+            border-radius: 4px;
+            color: #d4d4d8;
+            font-size: 0.9em;
+        }
+        .escalation-item:last-child {
+            margin-bottom: 0;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>📊 Board Dashboard</h1>
+        <p>Real-time issues requiring board action</p>
+    </header>
+
+    <main id="content">
+        <div class="loading">⏳ Loading board data...</div>
+    </main>
+
+    <footer>
+        <span>Last updated: <span id="last-updated">—</span> • Auto-refresh every 60s</span>
+    </footer>
+
+    <script>
+        async function loadBoardData() {
+            try {
+                const response = await fetch('/api/board');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                renderBoard(data);
+            } catch (error) {
+                document.getElementById('content').innerHTML = `
+                    <div class="error">
+                        <strong>Error loading board data:</strong> ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        function renderBoard(data) {
+            const actionRequired = data.action_required || [];
+            const blockedOnBoard = data.blocked_on_board || [];
+            const escalations = data.escalations || [];
+            const dailyDigest = data.daily_digest || "";
+            const lastUpdated = new Date(data.last_updated).toLocaleTimeString();
+
+            let html = '';
+
+            // Action Required section
+            html += `<section>
+                <h2>
+                    <span class="section-title">🔔 Action Required</span>
+                    <span class="counter">${data.action_required_count || 0}</span>
+                </h2>`;
+            if (actionRequired.length === 0) {
+                html += '<div class="empty-state"><div class="empty-state-icon">✅</div><div>All clear</div></div>';
+            } else {
+                html += '<ul class="issue-list">';
+                actionRequired.forEach(issue => {
+                    html += `<li class="issue-item">
+                        <div class="issue-info">
+                            <a href="https://{PAPERCLIP_HOSTNAME}/issues/${issue.identifier}" target="_blank" style="text-decoration: none; color: inherit;">
+                                <span class="issue-id">${issue.identifier}</span>
+                                <span class="issue-title">${issue.title}</span>
+                            </a>
+                        </div>
+                        <span class="status-badge status-in-review">In Review</span>
+                    </li>`;
+                });
+                html += '</ul>';
+            }
+            html += '</section>';
+
+            // Blocked on Board section
+            html += `<section>
+                <h2>
+                    <span class="section-title">🚧 Blocked on Board</span>
+                    <span class="counter">${data.blocked_on_board_count || 0}</span>
+                </h2>`;
+            if (blockedOnBoard.length === 0) {
+                html += '<div class="empty-state"><div class="empty-state-icon">✨</div><div>No blockers</div></div>';
+            } else {
+                html += '<ul class="issue-list">';
+                blockedOnBoard.forEach(issue => {
+                    html += `<li class="issue-item">
+                        <div class="issue-info">
+                            <a href="https://{PAPERCLIP_HOSTNAME}/issues/${issue.identifier}" target="_blank" style="text-decoration: none; color: inherit;">
+                                <span class="issue-id">${issue.identifier}</span>
+                                <span class="issue-title">${issue.title}</span>
+                            </a>
+                        </div>
+                        <span class="status-badge status-blocked">Blocked</span>
+                    </li>`;
+                });
+                html += '</ul>';
+            }
+            html += '</section>';
+
+            // Escalations section
+            html += `<section>
+                <h2>
+                    <span class="section-title">⚠️ Escalations</span>
+                    <span class="counter">${data.escalations_count || 0}</span>
+                </h2>`;
+            if (escalations.length === 0) {
+                html += '<div class="empty-state"><div class="empty-state-icon">✅</div><div>No active escalations</div></div>';
+            } else {
+                html += '<div>';
+                escalations.forEach(item => {
+                    html += `<div class="escalation-item">• ${item}</div>`;
+                });
+                html += '</div>';
+            }
+            html += '</section>';
+
+            // Daily Digest section
+            html += `<section>
+                <h2>
+                    <span class="section-title">📋 Daily Digest</span>
+                </h2>`;
+            if (dailyDigest) {
+                html += `<div class="digest-content">${dailyDigest.substring(0, 800)}${dailyDigest.length > 800 ? '\n\n...' : ''}</div>`;
+            } else {
+                html += '<div class="empty-state"><div class="empty-state-icon">📝</div><div>Digest posts daily at 09:00 IST</div></div>';
+            }
+            html += '</section>';
+
+            document.getElementById('content').innerHTML = html;
+            document.getElementById('last-updated').textContent = lastUpdated;
+        }
+
+        // Initial load
+        loadBoardData();
+
+        // Auto-refresh every 60 seconds
+        setInterval(loadBoardData, 60000);
+    </script>
+</body>
+</html>

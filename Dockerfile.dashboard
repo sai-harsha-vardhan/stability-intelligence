@@ -31,7 +31,8 @@ ENV PATH=/root/.local/bin:$PATH
 # Copy application code
 COPY dashboard/api/ /app/dashboard/api/
 COPY graph/ /app/graph/
-COPY .env /app/.env
+COPY agents/ /app/agents/
+COPY scripts/ /app/scripts/
 
 # Create logs directory
 RUN mkdir -p /app/logs

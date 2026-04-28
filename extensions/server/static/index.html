@@ -1,0 +1,1031 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Paperclip Governance Extensions</title>
+  <style>
+    /* ── Variables ─────────────────────────────────────── */
+    :root {
+      --bg:       #0d1117;
+      --surface:  #161b22;
+      --surface2: #21262d;
+      --border:   #30363d;
+      --text:     #e6edf3;
+      --muted:    #8b949e;
+      --accent:   #39d2c0;
+      --red:      #f85149;
+      --yellow:   #e3b341;
+      --green:    #3fb950;
+      --blue:     #388bfd;
+      --purple:   #a371f7;
+      --orange:   #f0883e;
+      --pink:     #ec6cb9;
+    }
+
+    /* ── Reset ─────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ── Header ────────────────────────────────────────── */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 20px;
+      height: 48px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .header-left { display: flex; align-items: center; gap: 12px; }
+    .logo { font-size: 18px; font-weight: 700; color: var(--accent); letter-spacing: -0.5px; }
+    .header-sub { color: var(--muted); font-size: 12px; }
+    .header-right { display: flex; align-items: center; gap: 16px; }
+    .paperclip-link {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 12px;
+      font-size: 12px;
+      color: var(--text);
+      cursor: pointer;
+    }
+    .paperclip-link:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+    .refresh-info { color: var(--muted); font-size: 11px; }
+
+    /* ── Main layout ───────────────────────────────────── */
+    main { padding: 20px; max-width: 1400px; margin: 0 auto; }
+
+    /* ── Cards ─────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      margin-bottom: 16px;
+    }
+    .card-header {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--surface2);
+    }
+    .card-title { font-weight: 600; font-size: 13px; }
+    .card-body { padding: 16px; }
+
+    /* ── Two-column top row ─────────────────────────────── */
+    .top-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    @media (max-width: 900px) { .top-row { grid-template-columns: 1fr; } }
+
+    /* ── Badges ─────────────────────────────────────────── */
+    .badge {
+      display: inline-block;
+      padding: 1px 7px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+      line-height: 1.6;
+    }
+    .badge-red    { background: rgba(248, 81, 73, 0.15); color: var(--red); border: 1px solid rgba(248,81,73,0.3); }
+    .badge-yellow { background: rgba(227, 179, 65, 0.15); color: var(--yellow); border: 1px solid rgba(227,179,65,0.3); }
+    .badge-green  { background: rgba(63, 185, 80, 0.15); color: var(--green); border: 1px solid rgba(63,185,80,0.3); }
+    .badge-blue   { background: rgba(56, 139, 253, 0.15); color: var(--blue); border: 1px solid rgba(56,139,253,0.3); }
+    .badge-muted  { background: var(--surface2); color: var(--muted); border: 1px solid var(--border); }
+    .badge-accent { background: rgba(57,210,192,0.12); color: var(--accent); border: 1px solid rgba(57,210,192,0.3); }
+
+    /* ── Status dot ─────────────────────────────────────── */
+    .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; flex-shrink: 0; }
+    .dot-red    { background: var(--red); }
+    .dot-yellow { background: var(--yellow); }
+    .dot-green  { background: var(--green); }
+    .dot-muted  { background: var(--muted); }
+
+    /* ── Alert items ────────────────────────────────────── */
+    .alert-list { display: flex; flex-direction: column; gap: 8px; }
+    .alert-item {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 12px;
+    }
+    .alert-item.crit { border-left: 3px solid var(--red); }
+    .alert-item.warn { border-left: 3px solid var(--yellow); }
+    .alert-title { font-weight: 600; margin-bottom: 2px; display: flex; align-items: center; gap: 6px; }
+    .alert-detail { color: var(--muted); font-size: 12px; }
+    .healthy-msg { color: var(--green); text-align: center; padding: 20px; font-size: 13px; }
+
+    /* ── Filter panel ───────────────────────────────────── */
+    .filter-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: flex-end;
+      margin-bottom: 16px;
+    }
+    .filter-group { display: flex; flex-direction: column; gap: 4px; }
+    .filter-group label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+    .filter-group select,
+    .filter-group input {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 12px;
+      padding: 5px 10px;
+      height: 30px;
+      min-width: 130px;
+    }
+    .filter-group select:focus,
+    .filter-group input:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    .btn {
+      height: 30px;
+      padding: 0 14px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      background: var(--accent);
+      color: #0d1117;
+      align-self: flex-end;
+    }
+    .btn:hover { opacity: 0.85; }
+    .btn-secondary { background: var(--surface2); color: var(--text); }
+
+    /* ── Issue table ────────────────────────────────────── */
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th {
+      text-align: left;
+      padding: 7px 10px;
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface2);
+      white-space: nowrap;
+    }
+    td {
+      padding: 7px 10px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--surface2); }
+    .identifier { font-family: monospace; font-size: 11px; color: var(--muted); white-space: nowrap; }
+    .title-cell { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .labels-cell { display: flex; flex-wrap: wrap; gap: 3px; }
+    .empty-row td { color: var(--muted); text-align: center; padding: 24px; }
+
+    /* ── Status chips ───────────────────────────────────── */
+    .status-chip { font-size: 11px; }
+
+    /* ── Tree ───────────────────────────────────────────── */
+    .tree { font-size: 12px; }
+    .tree ul { list-style: none; padding-left: 20px; border-left: 1px solid var(--border); margin-left: 8px; }
+    .tree > ul { padding-left: 0; border-left: none; margin-left: 0; }
+    .tree li { padding: 3px 0; }
+    .tree-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 6px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .tree-row:hover { background: var(--surface2); }
+    .tree-toggle { width: 14px; text-align: center; color: var(--muted); flex-shrink: 0; font-size: 10px; }
+    .tree-id { color: var(--muted); font-family: monospace; font-size: 11px; flex-shrink: 0; }
+    .tree-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tree-children { display: none; }
+    .tree-children.open { display: block; }
+
+    /* ── Misc ───────────────────────────────────────────── */
+    .count-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 20px;
+      height: 20px;
+      border-radius: 10px;
+      padding: 0 6px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .loading { color: var(--muted); text-align: center; padding: 20px; animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .error-msg { color: var(--red); text-align: center; padding: 16px; font-size: 12px; }
+    .section-divider { margin: 4px 0 12px; border: none; border-top: 1px solid var(--border); }
+    .tree-search {
+      width: 100%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 12px;
+      padding: 5px 10px;
+      margin-bottom: 10px;
+    }
+    .tree-search:focus { outline: none; border-color: var(--accent); }
+    .expand-all-btn { font-size: 11px; color: var(--muted); cursor: pointer; background: none; border: none; padding: 0; }
+    .expand-all-btn:hover { color: var(--accent); }
+
+    /* ── Tabs ───────────────────────────────────────────── */
+    .tab-bar {
+      display: flex;
+      gap: 0;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 20px;
+      background: var(--surface);
+      border-radius: 8px 8px 0 0;
+      overflow: hidden;
+    }
+    .tab-btn {
+      padding: 10px 20px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      background: none;
+      border: none;
+      color: var(--muted);
+      border-bottom: 2px solid transparent;
+      transition: color 0.15s, border-color 0.15s;
+      white-space: nowrap;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab-pane { display: none; }
+    .tab-pane.active { display: block; }
+
+    /* ── Kanban Board ───────────────────────────────────── */
+    .kanban-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: flex-end;
+      margin-bottom: 16px;
+      padding: 12px 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    .kanban-board-wrap {
+      overflow-x: auto;
+      padding-bottom: 12px;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border) var(--bg);
+    }
+    .kanban-board-wrap::-webkit-scrollbar { height: 6px; }
+    .kanban-board-wrap::-webkit-scrollbar-track { background: var(--bg); }
+    .kanban-board-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .kanban-board {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      min-width: max-content;
+    }
+    .kanban-col {
+      width: 224px;
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+    .kanban-col-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 7px 10px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px 6px 0 0;
+      margin-bottom: 0;
+    }
+    .kanban-col-name {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 140px;
+    }
+    .kanban-col-count {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--muted);
+      background: var(--bg);
+      border-radius: 10px;
+      padding: 1px 7px;
+      flex-shrink: 0;
+      margin-left: 6px;
+    }
+    .kanban-cards {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-top: none;
+      border-radius: 0 0 6px 6px;
+      min-height: 40px;
+      max-height: 70vh;
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border) var(--bg);
+    }
+    .kanban-cards::-webkit-scrollbar { width: 4px; }
+    .kanban-cards::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+    .kanban-empty {
+      padding: 14px 10px;
+      color: var(--muted);
+      font-size: 11px;
+      text-align: center;
+    }
+    .kanban-card {
+      padding: 9px 10px;
+      border-bottom: 1px solid var(--border);
+      cursor: default;
+      transition: background 0.1s;
+    }
+    .kanban-card:last-child { border-bottom: none; }
+    .kanban-card:hover { background: var(--surface2); }
+    .kanban-card-id {
+      font-family: monospace;
+      font-size: 11px;
+      color: var(--accent);
+      text-decoration: none;
+      display: inline-block;
+      margin-bottom: 3px;
+      font-weight: 600;
+    }
+    .kanban-card-id:hover { text-decoration: underline; }
+    .kanban-card-title {
+      font-size: 12px;
+      color: var(--text);
+      line-height: 1.4;
+      margin-bottom: 5px;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .kanban-card-labels {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 3px;
+    }
+    .kanban-loading {
+      color: var(--muted);
+      text-align: center;
+      padding: 40px 20px;
+      font-size: 13px;
+      animation: pulse 1.5s infinite;
+    }
+    .kanban-error {
+      color: var(--red);
+      text-align: center;
+      padding: 20px;
+      font-size: 12px;
+    }
+    .kanban-col.col-active  .kanban-col-header { border-left: 3px solid var(--accent); }
+    .kanban-col.col-review  .kanban-col-header { border-left: 3px solid var(--purple); }
+    .kanban-col.col-merge   .kanban-col-header { border-left: 3px solid var(--green); }
+    .kanban-col.col-done    .kanban-col-header { border-left: 3px solid var(--green); }
+    .kanban-col.col-blocked .kanban-col-header { border-left: 3px solid var(--red); }
+    .kanban-col.col-deferred .kanban-col-header { border-left: 3px solid var(--orange); }
+    .kanban-col.col-terminal .kanban-col-header { border-left: 3px solid var(--muted); }
+    .kanban-col.col-backlog .kanban-col-header { border-left: 3px solid var(--blue); }
+    .kanban-col.col-testing .kanban-col-header { border-left: 3px solid var(--pink); }
+  </style>
+
+</head>
+<body>
+
+<!-- ─── Header ─────────────────────────────────────────── -->
+<header>
+  <div class="header-left">
+    <span class="logo">⬡ Governance Extensions</span>
+    <span class="header-sub">Paperclip governance layer</span>
+  </div>
+  <div class="header-right">
+    <span class="refresh-info" id="refresh-info">—</span>
+    <a class="paperclip-link" href="/" target="_blank">Paperclip ↗</a>
+    <a class="paperclip-link" href="/docs" target="_blank">API Docs ↗</a>
+  </div>
+</header>
+
+<!-- ─── Main ───────────────────────────────────────────── -->
+<main>
+
+  <!-- Tab bar -->
+  <div class="tab-bar">
+    <button class="tab-btn active" onclick="switchTab('dashboard', this)">📊 Dashboard</button>
+    <button class="tab-btn" onclick="switchTab('kanban', this)">🗂 Kanban Board</button>
+  </div>
+
+  <!-- ══════════════ DASHBOARD TAB ══════════════ -->
+  <div id="pane-dashboard" class="tab-pane active">
+
+  <div class="top-row">
+
+    <!-- Routine Alerts -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">⚡ Routine Execution Health</span>
+        <span id="alerts-count" class="count-badge badge-muted">—</span>
+      </div>
+      <div class="card-body">
+        <div id="alerts-body" class="loading">Loading…</div>
+      </div>
+    </div>
+
+    <!-- Status Violations -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">🔍 Status Violations</span>
+        <span id="violations-count" class="count-badge badge-muted">—</span>
+      </div>
+      <div class="card-body">
+        <div id="violations-body" class="loading">Loading…</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Issue Filter -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">🔎 Issue Filter</span>
+      <span id="filter-count" class="count-badge badge-muted">—</span>
+    </div>
+    <div class="card-body">
+      <div class="filter-row">
+        <div class="filter-group">
+          <label>Wave</label>
+          <select id="f-wave">
+            <option value="">Any</option>
+            <option>wave-1</option>
+            <option>wave-2</option>
+            <option>wave-3</option>
+            <option>wave-4</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label>Status</label>
+          <select id="f-status">
+            <option value="">Any</option>
+            <option>backlog</option>
+            <option>todo</option>
+            <option>in_progress</option>
+            <option>in-testing</option>
+            <option>in_review</option>
+            <option>merge-ready</option>
+            <option>done</option>
+            <option>blocked</option>
+            <option>wave-deferred</option>
+            <option>cancelled</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label>Label</label>
+          <input id="f-label" type="text" placeholder="e.g. priority/critical">
+        </div>
+        <div class="filter-group">
+          <label>Parent ID</label>
+          <input id="f-parent" type="text" placeholder="e.g. task-abc123">
+        </div>
+        <button class="btn" onclick="runFilter()">Filter</button>
+        <button class="btn btn-secondary" onclick="clearFilter()">Clear</button>
+      </div>
+      <div class="table-wrap">
+        <table id="filter-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Title</th>
+              <th>Status</th>
+              <th>Labels</th>
+            </tr>
+          </thead>
+          <tbody id="filter-tbody">
+            <tr class="empty-row"><td colspan="4">Use the filters above to search issues.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Issue Tree -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">🌲 Issue Tree</span>
+      <div style="display:flex;gap:10px;align-items:center;">
+        <button class="expand-all-btn" onclick="toggleAllTree(true)">Expand all</button>
+        <button class="expand-all-btn" onclick="toggleAllTree(false)">Collapse all</button>
+        <span id="tree-count" class="count-badge badge-muted">—</span>
+      </div>
+    </div>
+    <div class="card-body">
+      <input class="tree-search" id="tree-search" type="text"
+             placeholder="Search issues by title or identifier…" oninput="filterTree()">
+      <div id="tree-body" class="loading">Loading…</div>
+    </div>
+  </div>
+
+  </div><!-- /pane-dashboard -->
+
+  <!-- ══════════════ KANBAN BOARD TAB ══════════════ -->
+  <div id="pane-kanban" class="tab-pane">
+
+    <!-- Kanban filter toolbar -->
+    <div class="kanban-toolbar">
+      <div class="filter-group">
+        <label>Wave</label>
+        <select id="kb-wave">
+          <option value="">All Waves</option>
+          <option>wave-1</option>
+          <option>wave-2</option>
+          <option>wave-3</option>
+          <option>wave-4</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label>Label contains</label>
+        <input id="kb-label" type="text" placeholder="e.g. priority/critical" style="min-width:160px;">
+      </div>
+      <div class="filter-group">
+        <label>Search</label>
+        <input id="kb-search" type="text" placeholder="Title or ID…" style="min-width:160px;">
+      </div>
+      <button class="btn" onclick="applyKanbanFilter()">Apply</button>
+      <button class="btn btn-secondary" onclick="clearKanbanFilter()">Clear</button>
+      <span id="kb-total" style="color:var(--muted);font-size:12px;align-self:center;margin-left:4px;"></span>
+    </div>
+
+    <!-- Board itself -->
+    <div id="kanban-container">
+      <div class="kanban-loading">Loading board…</div>
+    </div>
+
+  </div><!-- /pane-kanban -->
+
+</main>
+
+<script>
+/* ─────────────────────────────────────────────────────────
+   Utilities
+───────────────────────────────────────────────────────── */
+const $ = id => document.getElementById(id);
+
+function statusBadge(status) {
+  const map = {
+    todo: 'blue', in_progress: 'accent', in_review: 'purple',
+    done: 'green', backlog: 'muted', cancelled: 'muted',
+    blocked: 'red', 'merge-ready': 'green', 'wave-deferred': 'yellow',
+    'in-testing': 'accent',
+  };
+  const cls = map[status] || 'muted';
+  return `<span class="badge badge-${cls} status-chip">${status}</span>`;
+}
+
+function labelChips(labels) {
+  if (!labels || !labels.length) return '<span style="color:var(--muted)">—</span>';
+  return labels.map(l => {
+    let cls = 'muted';
+    if (l.startsWith('wave-')) cls = 'accent';
+    else if (l.startsWith('priority/')) cls = 'red';
+    else if (l.startsWith('domain/')) cls = 'blue';
+    else if (l.startsWith('github/')) cls = 'green';
+    else if (l.startsWith('type/')) cls = 'purple';
+    return `<span class="badge badge-${cls}">${l}</span>`;
+  }).join(' ');
+}
+
+function setCount(id, n, warnIfNonzero = false) {
+  const el = $(id);
+  if (n === null) { el.textContent = '—'; el.className = 'count-badge badge-muted'; return; }
+  el.textContent = n;
+  el.className = 'count-badge ' + (n === 0 ? 'badge-green' : warnIfNonzero ? 'badge-red' : 'badge-blue');
+}
+
+async function fetchJSON(path) {
+  const r = await fetch(path);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+/* ─────────────────────────────────────────────────────────
+   Routine Alerts
+───────────────────────────────────────────────────────── */
+async function loadAlerts() {
+  try {
+    const data = await fetchJSON('/api/routines/alerts');
+    const body = $('alerts-body');
+    setCount('alerts-count', data.count, true);
+    if (!data.count) {
+      body.innerHTML = '<div class="healthy-msg">✅ All routines healthy</div>';
+      return;
+    }
+    const crits = data.alerts.filter(a => a.level === 'critical');
+    const warns = data.alerts.filter(a => a.level === 'warning');
+    let html = '<div class="alert-list">';
+    for (const a of [...crits, ...warns]) {
+      const cls = a.level === 'critical' ? 'crit' : 'warn';
+      const dot = a.level === 'critical' ? 'red' : 'yellow';
+      html += `<div class="alert-item ${cls}">
+        <div class="alert-title">
+          <span class="dot dot-${dot}"></span>
+          ${escHtml(a.routine_title)}
+          <span class="badge badge-${dot}">${a.kind.replace(/_/g,' ')}</span>
+        </div>
+        <div class="alert-detail">${escHtml(a.detail)}</div>
+      </div>`;
+    }
+    html += '</div>';
+    body.innerHTML = html;
+  } catch (e) {
+    $('alerts-body').innerHTML = `<div class="error-msg">⚠ Failed to load: ${escHtml(e.message)}</div>`;
+    setCount('alerts-count', null);
+  }
+}
+
+/* ─────────────────────────────────────────────────────────
+   Status Violations
+───────────────────────────────────────────────────────── */
+async function loadViolations() {
+  try {
+    const data = await fetchJSON('/api/status/violations');
+    const body = $('violations-body');
+    setCount('violations-count', data.count, true);
+    if (!data.count) {
+      body.innerHTML = '<div class="healthy-msg">✅ No status violations</div>';
+      return;
+    }
+    const byKind = {};
+    for (const v of data.violations) (byKind[v.kind] = byKind[v.kind] || []).push(v);
+    let html = '<div class="alert-list">';
+    for (const [kind, items] of Object.entries(byKind)) {
+      const isUnknown = kind === 'unknown_status';
+      const dot = isUnknown ? 'red' : 'yellow';
+      const label = isUnknown ? 'Unknown Status' : 'Missing PR Label';
+      for (const v of items) {
+        html += `<div class="alert-item ${isUnknown ? 'crit' : 'warn'}">
+          <div class="alert-title">
+            <span class="dot dot-${dot}"></span>
+            <span class="identifier">${escHtml(v.identifier)}</span>
+            <span class="badge badge-${dot}">${label}</span>
+          </div>
+          <div class="alert-detail">${escHtml(v.title.slice(0,80))} — ${statusBadge(v.status)}</div>
+        </div>`;
+      }
+    }
+    html += '</div>';
+    body.innerHTML = html;
+  } catch (e) {
+    $('violations-body').innerHTML = `<div class="error-msg">⚠ Failed to load: ${escHtml(e.message)}</div>`;
+    setCount('violations-count', null);
+  }
+}
+
+/* ─────────────────────────────────────────────────────────
+   Issue Filter
+───────────────────────────────────────────────────────── */
+async function runFilter() {
+  const params = new URLSearchParams();
+  const wave = $('f-wave').value;
+  const status = $('f-status').value;
+  const label = $('f-label').value.trim();
+  const parent = $('f-parent').value.trim();
+  if (wave)   params.set('wave', wave);
+  if (status) params.set('status', status);
+  if (label)  params.set('label', label);
+  if (parent) params.set('parent', parent);
+
+  const tbody = $('filter-tbody');
+  tbody.innerHTML = '<tr class="empty-row"><td colspan="4" class="loading">Fetching…</td></tr>';
+  setCount('filter-count', null);
+
+  try {
+    const data = await fetchJSON('/api/issues/filter?' + params.toString());
+    setCount('filter-count', data.count);
+    if (!data.count) {
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="4">No issues match the selected filters.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.issues.map(i => `<tr>
+      <td><span class="identifier">${escHtml(i.identifier || i.id)}</span></td>
+      <td class="title-cell" title="${escHtml(i.title)}">${escHtml(i.title)}</td>
+      <td>${statusBadge(i.status)}</td>
+      <td><div class="labels-cell">${labelChips(i.labels)}</div></td>
+    </tr>`).join('');
+  } catch (e) {
+    tbody.innerHTML = `<tr class="empty-row"><td colspan="4" style="color:var(--red)">Error: ${escHtml(e.message)}</td></tr>`;
+    setCount('filter-count', null);
+  }
+}
+
+function clearFilter() {
+  $('f-wave').value = '';
+  $('f-status').value = '';
+  $('f-label').value = '';
+  $('f-parent').value = '';
+  $('filter-tbody').innerHTML = '<tr class="empty-row"><td colspan="4">Use the filters above to search issues.</td></tr>';
+  setCount('filter-count', null);
+}
+
+/* ─────────────────────────────────────────────────────────
+   Issue Tree
+───────────────────────────────────────────────────────── */
+let _treeData = [];
+
+async function loadTree() {
+  try {
+    const data = await fetchJSON('/api/issues/tree');
+    _treeData = data.tree;
+    setCount('tree-count', data.total);
+    renderTree(_treeData);
+  } catch (e) {
+    $('tree-body').innerHTML = `<div class="error-msg">⚠ Failed to load tree: ${escHtml(e.message)}</div>`;
+    setCount('tree-count', null);
+  }
+}
+
+function renderTree(roots) {
+  const body = $('tree-body');
+  if (!roots.length) { body.innerHTML = '<div class="healthy-msg">No issues found.</div>'; return; }
+  body.innerHTML = '<div class="tree"><ul>' + roots.map(nodeHtml).join('') + '</ul></div>';
+}
+
+function nodeHtml(node) {
+  const hasChildren = node.children && node.children.length > 0;
+  const toggle = hasChildren ? '▶' : '·';
+  const id = escHtml(node.identifier || node.id);
+  const title = escHtml((node.title || '').slice(0, 80));
+  const statusB = statusBadge(node.status || '');
+  const childrenHtml = hasChildren
+    ? `<div class="tree-children">${'<ul>' + node.children.map(nodeHtml).join('') + '</ul>'}</div>`
+    : '';
+  return `<li>
+    <div class="tree-row" onclick="toggleNode(this)" data-id="${escAttr(node.id)}">
+      <span class="tree-toggle">${toggle}</span>
+      <span class="tree-id">${id}</span>
+      <span class="tree-title">${title}</span>
+      ${statusB}
+    </div>
+    ${childrenHtml}
+  </li>`;
+}
+
+function toggleNode(rowEl) {
+  const childrenDiv = rowEl.nextElementSibling;
+  if (!childrenDiv) return;
+  const open = childrenDiv.classList.toggle('open');
+  rowEl.querySelector('.tree-toggle').textContent = open ? '▼' : '▶';
+}
+
+function toggleAllTree(expand) {
+  document.querySelectorAll('.tree-children').forEach(el => {
+    el.classList.toggle('open', expand);
+  });
+  document.querySelectorAll('.tree-toggle').forEach(el => {
+    if (el.textContent === '▶' || el.textContent === '▼')
+      el.textContent = expand ? '▼' : '▶';
+  });
+}
+
+function filterTree() {
+  const q = $('tree-search').value.trim().toLowerCase();
+  if (!q) { renderTree(_treeData); return; }
+  const filtered = filterNodes(_treeData, q);
+  renderTree(filtered);
+}
+
+function filterNodes(nodes, q) {
+  const result = [];
+  for (const node of nodes) {
+    const match =
+      (node.identifier || '').toLowerCase().includes(q) ||
+      (node.title || '').toLowerCase().includes(q);
+    const filteredChildren = filterNodes(node.children || [], q);
+    if (match || filteredChildren.length) {
+      result.push({ ...node, children: filteredChildren });
+    }
+  }
+  return result;
+}
+
+/* ─────────────────────────────────────────────────────────
+   XSS helpers
+───────────────────────────────────────────────────────── */
+function escHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function escAttr(s) { return escHtml(s); }
+
+/* ─────────────────────────────────────────────────────────
+   Tab switching
+───────────────────────────────────────────────────────── */
+let _activeTab = 'dashboard';
+
+function switchTab(name, btn) {
+  _activeTab = name;
+  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('pane-' + name).classList.add('active');
+  btn.classList.add('active');
+  if (name === 'kanban' && !_kanbanLoaded) loadKanban();
+}
+
+/* ─────────────────────────────────────────────────────────
+   Auto-refresh
+───────────────────────────────────────────────────────── */
+let _nextRefresh = 0;
+const REFRESH_SEC = 60;
+
+function updateRefreshInfo() {
+  const secs = Math.max(0, Math.round((_nextRefresh - Date.now()) / 1000));
+  $('refresh-info').textContent = secs > 0 ? `Refreshes in ${secs}s` : 'Refreshing…';
+}
+
+function scheduleRefresh() {
+  _nextRefresh = Date.now() + REFRESH_SEC * 1000;
+  setInterval(updateRefreshInfo, 1000);
+  setTimeout(async function tick() {
+    await loadAll();
+    _nextRefresh = Date.now() + REFRESH_SEC * 1000;
+    setTimeout(tick, REFRESH_SEC * 1000);
+  }, REFRESH_SEC * 1000);
+}
+
+async function loadAll() {
+  await Promise.all([loadAlerts(), loadViolations(), loadTree()]);
+  if (_kanbanLoaded) {
+    _kanbanLoaded = false;
+    await loadKanban();
+  }
+}
+
+/* ─────────────────────────────────────────────────────────
+   Kanban Board
+───────────────────────────────────────────────────────── */
+
+const KANBAN_COLUMNS = [
+  { status: 'backlog',       label: 'Backlog',        group: 'col-backlog'  },
+  { status: 'todo',          label: 'To Do',          group: 'col-active'   },
+  { status: 'in_progress',   label: 'In Progress',    group: 'col-active'   },
+  { status: 'in-testing',    label: 'In Testing',     group: 'col-testing'  },
+  { status: 'in_review',     label: 'In Review',      group: 'col-review'   },
+  { status: 'merge-ready',   label: 'Merge Ready ✓',  group: 'col-merge'    },
+  { status: 'done',          label: 'Done',           group: 'col-done'     },
+  { status: 'blocked',       label: 'Blocked',        group: 'col-blocked'  },
+  { status: 'wave-deferred', label: 'Wave Deferred',  group: 'col-deferred' },
+  { status: 'cancelled',     label: 'Cancelled',      group: 'col-terminal' },
+];
+
+let _kanbanLoaded = false;
+let _kanbanAllIssues = [];
+let _kanbanFiltered = [];
+
+async function loadKanban() {
+  const container = $('kanban-container');
+  container.innerHTML = '<div class="kanban-loading">Loading board…</div>';
+  try {
+    const data = await fetchJSON('/api/issues/filter');
+    _kanbanAllIssues = data.issues || [];
+    _kanbanLoaded = true;
+    applyKanbanFilter();
+  } catch (e) {
+    container.innerHTML = `<div class="kanban-error">⚠ Failed to load: ${escHtml(e.message)}</div>`;
+  }
+}
+
+function applyKanbanFilter() {
+  const wave   = $('kb-wave').value.trim();
+  const label  = $('kb-label').value.trim().toLowerCase();
+  const search = $('kb-search').value.trim().toLowerCase();
+
+  _kanbanFiltered = _kanbanAllIssues.filter(issue => {
+    if (wave && !(issue.labels || []).includes(wave)) return false;
+    if (label && !(issue.labels || []).some(l => l.toLowerCase().includes(label))) return false;
+    if (search) {
+      const hay = ((issue.identifier || '') + ' ' + (issue.title || '')).toLowerCase();
+      if (!hay.includes(search)) return false;
+    }
+    return true;
+  });
+
+  $('kb-total').textContent = `${_kanbanFiltered.length} issue${_kanbanFiltered.length !== 1 ? 's' : ''}`;
+  renderKanban(_kanbanFiltered);
+}
+
+function clearKanbanFilter() {
+  $('kb-wave').value = '';
+  $('kb-label').value = '';
+  $('kb-search').value = '';
+  applyKanbanFilter();
+}
+
+function renderKanban(issues) {
+  const byStatus = {};
+  for (const col of KANBAN_COLUMNS) byStatus[col.status] = [];
+  const unknown = [];
+  for (const issue of issues) {
+    const s = issue.status || '';
+    if (byStatus[s] !== undefined) byStatus[s].push(issue);
+    else unknown.push(issue);
+  }
+
+  const board = document.createElement('div');
+  board.className = 'kanban-board-wrap';
+  const inner = document.createElement('div');
+  inner.className = 'kanban-board';
+
+  for (const col of KANBAN_COLUMNS) {
+    const cards = byStatus[col.status];
+    inner.appendChild(buildColumn(col, cards));
+  }
+  if (unknown.length) {
+    inner.appendChild(buildColumn({ status: '(unknown)', label: 'Unknown Status', group: 'col-terminal' }, unknown));
+  }
+
+  board.appendChild(inner);
+  $('kanban-container').innerHTML = '';
+  $('kanban-container').appendChild(board);
+}
+
+function buildColumn(col, cards) {
+  const colEl = document.createElement('div');
+  colEl.className = `kanban-col ${col.group}`;
+
+  const header = document.createElement('div');
+  header.className = 'kanban-col-header';
+  header.innerHTML = `<span class="kanban-col-name" title="${escHtml(col.label)}">${escHtml(col.label)}</span>`
+    + `<span class="kanban-col-count">${cards.length}</span>`;
+  colEl.appendChild(header);
+
+  const cardsEl = document.createElement('div');
+  cardsEl.className = 'kanban-cards';
+
+  if (!cards.length) {
+    cardsEl.innerHTML = '<div class="kanban-empty">—</div>';
+  } else {
+    for (const issue of cards) {
+      cardsEl.appendChild(buildCard(issue));
+    }
+  }
+
+  colEl.appendChild(cardsEl);
+  return colEl;
+}
+
+function buildCard(issue) {
+  const card = document.createElement('div');
+  card.className = 'kanban-card';
+
+  const id = issue.identifier || issue.id || '';
+  const title = (issue.title || '').trim();
+  const labels = issue.labels || [];
+
+  const idLink = `<a class="kanban-card-id" href="/issues/${encodeURIComponent(id)}" target="_blank" rel="noopener">${escHtml(id)}</a>`;
+  const titleHtml = `<div class="kanban-card-title" title="${escHtml(title)}">${escHtml(title)}</div>`;
+  const labelsHtml = labels.length
+    ? `<div class="kanban-card-labels">${labelChips(labels)}</div>`
+    : '';
+
+  card.innerHTML = idLink + titleHtml + labelsHtml;
+  return card;
+}
+
+/* ─────────────────────────────────────────────────────────
+   Boot
+───────────────────────────────────────────────────────── */
+loadAll();
+scheduleRefresh();
+</script>
+
+</body>
+</html>

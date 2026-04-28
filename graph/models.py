@@ -109,6 +109,9 @@ class ActionItem(Node):
     backward_score: int = 0
     blocking_multiplier: float = 1.0
     priority_score: float = 0.0
+    estimated_effort_hours: float = 0.0
+    risk_of_breaking_changes: int = 0
+    expected_reduction_percent: float = 0.0
     stagger_safe: bool = False
     stagger_sequence: str = ""
     

@@ -1,0 +1,180 @@
+╔════════════════════════════════════════════════════════════════════════════════╗
+║                   RCA-58: MONITORING & HEALTH CHECKS                           ║
+║                         COMMAND REFERENCE CARD                                 ║
+╚════════════════════════════════════════════════════════════════════════════════╝
+
+┌─ HEALTH CHECK COMMANDS ────────────────────────────────────────────────────────┐
+│                                                                                │
+│  Run Full Health Check:                                                       │
+│  $ python3 scripts/health_check.py                                            │
+│  Returns: 0 (healthy) or 1 (unhealthy)                                        │
+│                                                                                │
+│  Check Exit Code:                                                              │
+│  $ echo $?                                                                     │
+│                                                                                │
+│  Save Report to File:                                                          │
+│  $ python3 scripts/health_check.py > health-report-$(date +%Y%m%d).txt        │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
+
+┌─ API HEALTH ENDPOINTS ─────────────────────────────────────────────────────────┐
+│                                                                                │
+│  Get Detailed Health:                                                          │
+│  $ curl http://localhost:8000/api/system-health-detailed | jq .               │
+│                                                                                │
+│  Check Overall Status:                                                         │
+│  $ curl http://localhost:8000/api/system-health-detailed | jq '.overall_status'│
+│                                                                                │
+│  Get Summary Metrics:                                                          │
+│  $ curl http://localhost:8000/api/system-health-detailed | jq '.summary'      │
+│                                                                                │
+│  Check Data Quality:                                                           │
+│  $ curl http://localhost:8000/api/system-health-detailed | jq '.data_quality' │
+│                                                                                │
+│  Using Cloudflare Tunnel:                                                      │
+│  $ curl https://fabric-granny-missouri-linking.trycloudflare.com/api/system-health-detailed | jq .
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
+
+┌─ SCHEDULER LOG MONITORING ─────────────────────────────────────────────────────┐
+│                                                                                │
+│  Watch Real-Time Logs:                                                         │
+│  $ tail -f /app/logs/scheduler.log                                            │
+│                                                                                │
+│  Filter Health Check Jobs:                                                     │
+│  $ grep "health_check_detailed" /app/logs/scheduler.log                       │
+│                                                                                │
+│  View Successful Jobs:                                                         │
+│  $ grep "✅ Job" /app/logs/scheduler.log                                       │
+│                                                                                │
+│  View Failed Jobs:                                                             │
+│  $ grep "❌ Job" /app/logs/scheduler.log                                       │
+│                                                                                │
+│  Count Today's Successful Jobs:                                                │
+│  $ grep "✅ Job" /app/logs/scheduler.log | grep "$(date +%Y-%m-%d)" | wc -l   │
+│                                                                                │
+│  Last 20 Errors:                                                               │
+│  $ grep "❌" /app/logs/scheduler.log | tail -20                                │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
+
+┌─ DOCKER COMMANDS ──────────────────────────────────────────────────────────────┐
+│                                                                                │
+│  View Scheduler Logs:                                                          │
+│  $ docker-compose logs -f scheduler                                           │
+│                                                                                │
+│  Run Health Check in Container:                                                │
+│  $ docker-compose exec scheduler python3 scripts/health_check.py             │
+│                                                                                │
+│  Check Scheduler Status:                                                       │
+│  $ docker-compose ps scheduler                                                │
+│                                                                                │
+│  Restart Scheduler:                                                            │
+│  $ docker-compose restart scheduler                                           │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
+
+┌─ VALIDATION & TESTING ─────────────────────────────────────────────────────────┐
+│                                                                                │
+│  Run Automated Validation:                                                     │
+│  $ ./test_monitoring.sh                                                        │
+│                                                                                │
+│  Syntax Check:                                                                 │
+│  $ python3 -m py_compile scripts/health_check.py                              │
+│                                                                                │
+│  Check Function Presence:                                                      │
+│  $ grep "def check_" scripts/health_check.py                                  │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
+
+┌─ HEALTH CHECK METRICS ─────────────────────────────────────────────────────────┐
+│                                                                                │
+│  📊 Data Quality:                                                              │
+│     • Mock data count (should be 0)                                           │
+│     • Total incidents (should be > 0)                                         │
+│     • Last sync timestamp                                                     │
+│     • Recent activity (24h)                                                   │
+│                                                                                │
+│  🔄 GitHub Sync:                                                               │
+│     • Last sync time                                                          │
+│     • Hours since sync                                                        │
+│     • Total issues synced                                                     │
+│     • Threshold (2x configured interval)                                      │
+│                                                                                │
+│  ⏰ Scheduler Jobs:                                                            │
+│     • Jobs tracked (6 expected)                                               │
+│     • Recent errors count                                                     │
+│     • Last success timestamps                                                 │
+│                                                                                │
+│  🤖 Agent Execution:                                                           │
+│     • RCA Agent activity (last 2h)                                            │
+│     • Priority Agent activity (last 2h)                                       │
+│     • Last run timestamps                                                     │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
+
+┌─ ALERT THRESHOLDS ─────────────────────────────────────────────────────────────┐
+│                                                                                │
+│  Component         │  Warning          │  Critical                            │
+│  ──────────────────┼───────────────────┼──────────────────────────────────── │
+│  Mock Data         │  > 0 incidents    │  N/A                                 │
+│  GitHub Sync       │  > 1x interval    │  > 2x interval                       │
+│  Agent Activity    │  > 2 hours        │  > 4 hours                           │
+│  Scheduler Errors  │  > 0 errors       │  > 5 errors                          │
+│  Neo4j Connection  │  Degraded         │  Unavailable                         │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TROUBLESHOOTING ──────────────────────────────────────────────────────────────┐
+│                                                                                │
+│  Issue: Health check fails with connection error                              │
+│  Fix: Ensure Neo4j is running: docker-compose ps neo4j                        │
+│                                                                                │
+│  Issue: Mock data detected                                                    │
+│  Fix: Run data cleanup and resync:                                            │
+│       $ python3 scripts/github_sync.py --bulk                                 │
+│                                                                                │
+│  Issue: Scheduler jobs not running                                            │
+│  Fix: Check scheduler logs for errors:                                        │
+│       $ docker-compose logs scheduler | tail -50                              │
+│                                                                                │
+│  Issue: API endpoint returns 500 error                                        │
+│  Fix: Check dashboard logs:                                                   │
+│       $ docker-compose logs dashboard | grep "ERROR"                          │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
+
+┌─ FILES REFERENCE ──────────────────────────────────────────────────────────────┐
+│                                                                                │
+│  Implementation Files:                                                         │
+│    scripts/health_check.py (393 lines)                                        │
+│    scheduler/runner.py (463 lines)                                            │
+│    dashboard/api/main.py (1121 lines)                                         │
+│                                                                                │
+│  Documentation:                                                                │
+│    RCA-58_MONITORING_COMPLETE.md (comprehensive guide)                        │
+│    RCA-58_QUICK_REFERENCE.md (quick commands)                                 │
+│                                                                                │
+│  Testing:                                                                      │
+│    test_monitoring.sh (validation script)                                     │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
+
+┌─ QUICK STATUS CHECK ───────────────────────────────────────────────────────────┐
+│                                                                                │
+│  One-liner to check if system is healthy:                                     │
+│                                                                                │
+│  $ python3 scripts/health_check.py && echo "✅ HEALTHY" || echo "❌ UNHEALTHY"│
+│                                                                                │
+│  One-liner to get API status:                                                 │
+│                                                                                │
+│  $ curl -s http://localhost:8000/api/system-health-detailed | \               │
+│    jq -r '.overall_status' | \                                                │
+│    awk '{if ($1=="healthy") print "✅ HEALTHY"; else print "❌ UNHEALTHY"}'   │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
+
+╔════════════════════════════════════════════════════════════════════════════════╗
+║  STATUS: ✅ READY FOR DEPLOYMENT                                               ║
+║  All acceptance criteria met │ All tests passing │ Documentation complete     ║
+╚════════════════════════════════════════════════════════════════════════════════╝

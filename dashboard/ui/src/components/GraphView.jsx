@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import CytoscapeComponent from 'react-cytoscapejs'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
 
 const GraphView = ({ limit = 1000 }) => {
   const [graphData, setGraphData] = useState({ nodes: [], edges: [] })

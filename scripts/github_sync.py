@@ -29,8 +29,8 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 
-DEFAULT_REPO = "juspay/hyperswitch"
-DEFAULT_LABELS = "rca-discussed,rca-action-item,incident-reported"
+DEFAULT_REPO = "juspay/hyperswitch-cloud"
+DEFAULT_LABELS = "Incident Reported,RCA-Action,RCA Discussed,RCA Prepared,Incident Mitigated"
 DEFAULT_CACHE_DIR = "github-cache"
 STATE_FILE = "sync_state.json"
 
@@ -82,7 +82,11 @@ def save_sync_state(state: Dict) -> None:
 
 def run_gh_command(args: List[str], repo: str) -> Dict:
     """Execute a gh CLI command and return JSON output."""
-    cmd = ["gh"] + args + ["--repo", repo]
+    # gh api doesn't support --repo flag, only gh issue/pr commands do
+    if args[0] == "api":
+        cmd = ["gh"] + args
+    else:
+        cmd = ["gh"] + args + ["--repo", repo]
     
     try:
         result = subprocess.run(
@@ -109,60 +113,65 @@ def run_gh_command(args: List[str], repo: str) -> Dict:
 
 def fetch_issues(repo: str, labels: List[str],
                  since: Optional[str] = None, state: str = "all") -> List[Dict]:
-    """Fetch issues from GitHub using gh CLI with pagination."""
-    issues = []
+    """Fetch issues from GitHub using gh CLI with pagination.
     
-    # Build label filter
-    label_filter = ",".join(labels)
+    Fetches issues for EACH label separately (OR logic) and deduplicates by issue number.
+    """
+    # Dictionary to store unique issues by issue number
+    unique_issues = {}
     
     # gh issue list only supports open/closed, not "all"
     # We'll fetch both and combine
     states_to_fetch = ["open", "closed"] if state == "all" else [state]
     
-    for issue_state in states_to_fetch:
-        page = 1
-        per_page = 100
+    # Fetch issues for EACH label separately (OR logic)
+    for label in labels:
+        print(f"\nFetching issues with label: {label}", flush=True)
         
-        while True:
-            print(f"Fetching {issue_state} issues page {page}...")
+        for issue_state in states_to_fetch:
+            print(f"  Fetching {issue_state} issues...", flush=True)
             
-            # Build gh issue list command
+            # Build gh issue list command with SINGLE label
+            # Note: gh CLI --limit only sets max results, not pagination
+            # We use a high limit to get all issues at once (max is 1000)
             args = [
                 "issue", "list",
                 "--state", issue_state,
-                "--label", label_filter,
-                "--limit", str(per_page),
-                "--json", "number,title,body,state,createdAt,updatedAt,closedAt,labels,user,assignees,milestone,comments"
+                "--label", label,  # Single label for OR logic
+                "--limit", "1000",  # Maximum allowed by gh CLI
+                "--json", "number,title,body,state,createdAt,updatedAt,closedAt,labels,author,assignees,milestone,comments"
             ]
-            
-            if since and issue_state != "closed":
-                # gh doesn't support since parameter directly
-                # We'll filter client-side
-                pass
             
             try:
                 page_issues = run_gh_command(args, repo)
+                
+                # Ensure we got a list
+                if not isinstance(page_issues, list):
+                    print(f"  Warning: Expected list but got {type(page_issues)}", flush=True)
+                    page_issues = []
+                    
             except RuntimeError as e:
                 if "no issues" in str(e).lower() or "not found" in str(e).lower():
                     page_issues = []
                 else:
                     raise
             
-            if not page_issues:
-                break
+            print(f"  Fetched {len(page_issues)} {issue_state} issues", flush=True)
             
             # Convert gh CLI field names to match old API format
             for issue in page_issues:
+                issue_number = issue["number"]
+                
                 converted = {
-                    "number": issue["number"],
+                    "number": issue_number,
                     "title": issue["title"],
                     "body": issue.get("body", ""),
                     "state": issue["state"],
                     "created_at": issue["createdAt"],
                     "updated_at": issue["updatedAt"],
                     "closed_at": issue.get("closedAt"),
-                    "labels": [{"name": label["name"]} for label in issue.get("labels", [])],
-                    "user": issue.get("user", {}),
+                    "labels": [{"name": lbl["name"]} for lbl in issue.get("labels", [])],
+                    "user": issue.get("author", {}),
                     "assignees": issue.get("assignees", []),
                     "milestone": issue.get("milestone"),
                     "comments": issue.get("comments", 0),
@@ -172,19 +181,17 @@ def fetch_issues(repo: str, labels: List[str],
                 if since:
                     issue_updated = datetime.fromisoformat(converted["updated_at"].replace("Z", "+00:00"))
                     since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
-                    if issue_updated >= since_dt:
-                        issues.append(converted)
-                else:
-                    issues.append(converted)
-            
-            if len(page_issues) < per_page:
-                break
-            
-            page += 1
-            
-            if page > 100:  # Safety limit
-                print(f"Warning: Reached safety limit at {len(issues)} issues")
-                break
+                    if issue_updated < since_dt:
+                        continue
+                
+                # Store in unique_issues dict (deduplicate by issue number)
+                if issue_number not in unique_issues:
+                    unique_issues[issue_number] = converted
+        
+        print(f"  Total unique issues so far: {len(unique_issues)}", flush=True)
+    
+    issues = list(unique_issues.values())
+    print(f"\nTotal unique issues found: {len(issues)}", flush=True)
     
     return issues
 
@@ -283,12 +290,19 @@ def transform_issue(issue: Dict, comments: List[Dict], linked_issues: List[int])
 
 def infer_issue_type(labels: List[str]) -> str:
     """Infer issue type from labels."""
-    if "incident-reported" in labels:
+    # Convert to lowercase for case-insensitive matching
+    labels_lower = [label.lower() for label in labels]
+    
+    if "incident reported" in labels_lower or "incident-reported" in labels_lower:
         return "incident"
-    elif "rca-discussed" in labels:
+    elif "rca discussed" in labels_lower or "rca-discussed" in labels_lower:
         return "rca"
-    elif "rca-action-item" in labels:
+    elif "rca prepared" in labels_lower or "rca-prepared" in labels_lower:
+        return "rca"
+    elif "rca-action" in labels_lower or "rca-action-item" in labels_lower:
         return "action_item"
+    elif "incident mitigated" in labels_lower or "incident-mitigated" in labels_lower:
+        return "incident"
     else:
         return "unknown"
 

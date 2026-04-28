@@ -1,0 +1,129 @@
+# Governance State Machine
+# Authoritative source: GOVERNANCE_LABELS.md
+# Python encoding:      extensions/api/status_validator.py
+# Schema version:       governance/state-machine/v3
+#
+# This file is the declarative, human-readable form of the transition table.
+# It is not parsed at runtime — status_validator.py is the runtime authority.
+# It exists so the state machine can be reviewed, diffed, and understood
+# without reading Python.
+#
+# v3 (2026-04-16): Consolidated from 19 statuses to 10 by absorbing fine-grained
+# variants into parent categories. See notes.absorbed_statuses below.
+
+schema: "governance/state-machine/v3"
+description: >
+  Valid status transitions for Paperclip issues,
+  encoding the governance rules in GOVERNANCE_LABELS.md.
+  v3 consolidates to 10 statuses: backlog, todo, in_progress, in-testing,
+  in_review, merge-ready, done, blocked, wave-deferred, cancelled.
+
+# ── Status taxonomy ─────────────────────────────────────────────────────────
+
+statuses:
+  all:
+    - backlog
+    - todo
+    - in_progress
+    - in-testing          # QA / test pipeline actively running
+    - in_review
+    - merge-ready         # All gates passed; queued for merge
+    - done
+    - blocked
+    - wave-deferred       # Parked until next wave promotion gate opens
+    - cancelled
+
+  terminal:
+    - done
+    - cancelled
+
+  pr_required:
+    # Issues in these statuses MUST carry the 'github/has-pr' label.
+    statuses:
+      - merge-ready
+    required_label: "github/has-pr"
+
+# ── Valid transitions ────────────────────────────────────────────────────────
+# Format: from_status → list of allowed to_statuses
+# Terminal statuses have empty lists (no outbound transitions allowed).
+
+transitions:
+  backlog:
+    - todo
+    - cancelled
+    - wave-deferred
+
+  todo:
+    - in_progress
+    - backlog
+    - cancelled
+    - wave-deferred
+
+  in_progress:
+    - in_review
+    - in-testing
+    - blocked
+    - backlog
+    - cancelled
+    - merge-ready
+    - wave-deferred
+
+  in-testing:
+    - in_review
+    - in_progress
+    - done
+    - blocked
+    - cancelled
+
+  in_review:
+    - done
+    - blocked
+    - in_progress
+    - merge-ready
+    - in-testing
+
+  merge-ready:
+    - done
+    - in_progress
+    - cancelled
+
+  done: []          # terminal
+
+  blocked:
+    - todo
+    - in_progress
+    - cancelled
+
+  wave-deferred:
+    - backlog
+    - todo
+    - cancelled
+
+  cancelled: []     # terminal
+
+# ── Notes ────────────────────────────────────────────────────────────────────
+
+notes:
+  reopen_policy: >
+    done and cancelled are terminal. There is no reopen path.
+    To restart work on a done/cancelled item, create a new issue.
+
+  no_op_policy: >
+    A transition where from_status == to_status is always valid (no-op).
+    The validator short-circuits on this case.
+
+  merge_ready_policy: >
+    merge-ready replaces the informal "PR approved" state. An issue reaches
+    merge-ready when: (a) github/pr-approved label is set, (b) CI is green,
+    (c) QA has signed off, (d) no outstanding review comments. The board
+    member reviews the merge-ready column and merges or kicks back to in_progress.
+
+  absorbed_statuses_2026_04_16: >
+    Nine statuses were absorbed into parent categories to reduce cognitive load:
+    needs-author-action → in_review;
+    waiting-for-pr-merge → merge-ready;
+    blocked-on-board / blocked-on-design-adr / blocked-on-infra / blocked-on-external → blocked;
+    waiting-for-rebase / waiting-for-stabilization → in_review or in_progress;
+    waiting-for-wave-promotion → wave-deferred.
+    Use labels (e.g. flag/blocked-board, flag/waiting-rebase) for additional
+    sub-categorisation if needed.

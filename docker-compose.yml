@@ -6,8 +6,8 @@ services:
     image: neo4j:5.18-community
     container_name: stability-neo4j
     ports:
-      - "7474:7474"
-      - "7687:7687"
+      - "9474:7474"
+      - "9687:7687"
     environment:
       NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
       NEO4J_PLUGINS: '["apoc"]'
@@ -104,7 +104,7 @@ services:
       - ./hyperswitch-repo:/app/hyperswitch-repo
       - ./github-cache:/app/github-cache
       - agent_logs:/app/logs
-      - ~/.config/gh:/root/.config/gh:ro
+      - /home/sai_harsha/.config/gh:/root/.config/gh:ro
     restart: unless-stopped
 
   dashboard-api:

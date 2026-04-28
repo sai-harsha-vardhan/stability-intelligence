@@ -38,14 +38,17 @@ server {
         try_files $uri $uri/ /index.html;
     }
 
-    # API proxy to dashboard-api
+    # API proxy to dashboard-api (strip /api prefix)
     location /api/ {
-        proxy_pass http://dashboard-api:8000/api/;
+        proxy_pass http://dashboard-api:8000/;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
         proxy_set_header Host $host;
         proxy_cache_bypass $http_upgrade;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 
     # Health check endpoint

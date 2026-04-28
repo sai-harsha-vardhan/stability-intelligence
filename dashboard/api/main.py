@@ -32,6 +32,8 @@ from pydantic import BaseModel, Field
 from graph.client import get_client, query as neo4j_query
 from graph.queries import get_query
 from agents.base import BaseAgent
+from scripts.github_sync import incremental_sync, load_sync_state
+from scripts.transform_issues_to_graph import transform_issues_to_graph
 
 
 # ============================================================================
@@ -105,9 +107,9 @@ class ProgressItem(BaseModel):
     id: str
     title: str
     status: str
-    assignee: str
+    assignee: Optional[str] = ""
     priority_score: float
-    implementation_complexity: str
+    implementation_complexity: Optional[str] = "medium"
     created_at: Optional[str] = None
     resolved_at: Optional[str] = None
     effective: Optional[bool] = None
@@ -285,6 +287,9 @@ def root() -> Dict[str, Any]:
             "/health",
             "/stats",
             "/nodes/{node_id}",
+            "/trigger-sync",
+            "/analyze-now",
+            "/system-status",
         ],
     }
 
@@ -481,14 +486,14 @@ def get_progress(
         RETURN ai.id AS id,
                ai.title AS title,
                ai.status AS status,
-               ai.assignee AS assignee,
-               ai.priority_score AS priority_score,
-               ai.implementation_complexity AS implementation_complexity,
+               COALESCE(ai.assignee, '') AS assignee,
+               COALESCE(ai.priority_score, 0.0) AS priority_score,
+               COALESCE(ai.implementation_complexity, 'medium') AS implementation_complexity,
                ai.created_at AS created_at,
                ai.resolved_at AS resolved_at,
                ai.effective AS effective,
                pc.name AS pattern_cluster_name
-        ORDER BY ai.priority_score DESC
+        ORDER BY COALESCE(ai.priority_score, 0.0) DESC
         """
         
         action_items = client.read(query)
@@ -570,12 +575,21 @@ def get_activity(
             if event_type and ae.get("event_type") != event_type:
                 continue
             
+            # Parse details from JSON string
+            details = ae.get("details", "{}")
+            if isinstance(details, str):
+                try:
+                    import json
+                    details = json.loads(details)
+                except:
+                    details = {}
+            
             events.append({
                 "id": ae.get("id"),
                 "agent_name": ae.get("agent_name", ""),
                 "event_type": ae.get("event_type", ""),
                 "message": ae.get("message", ""),
-                "details": ae.get("details", {}),
+                "details": details,
                 "linked_node_id": ae.get("linked_node_id"),
                 "linked_node_type": ae.get("linked_node_type"),
                 "created_at": _convert_datetime(ae.get("created_at")),
@@ -628,7 +642,16 @@ def get_change_feed(
             # Map event types to change descriptions
             event_type = ae.get("event_type", "")
             message = ae.get("message", "")
-            details = ae.get("details", {})
+            
+            # Parse details from JSON string
+            details = ae.get("details", "{}")
+            if isinstance(details, str):
+                try:
+                    import json
+                    details = json.loads(details)
+                except:
+                    details = {}
+            
             node_type = ae.get("linked_node_type", "ActivityEvent")
             
             events.append({
@@ -709,11 +732,13 @@ def get_health() -> Dict[str, Any]:
     # Check graph staleness
     try:
         client = _get_neo4j_client()
+        # Check SyncMetadata node for last sync time
         staleness_result = client.read("""
-            MATCH (n) 
-            RETURN max(n.updated_at) as last_update, count(n) as node_count
+            MATCH (sm:SyncMetadata {id: 'sync_metadata'})
+            RETURN sm.last_sync_at as last_update, 
+                   sm.total_incidents + sm.total_actions as node_count
         """)
-        if staleness_result:
+        if staleness_result and staleness_result[0].get("last_update"):
             last_update = staleness_result[0].get("last_update")
             node_count = staleness_result[0].get("node_count", 0)
             
@@ -731,6 +756,30 @@ def get_health() -> Dict[str, Any]:
             }
             if is_stale:
                 overall_healthy = False
+        else:
+            # Fallback to old method if SyncMetadata doesn't exist yet
+            staleness_result = client.read("""
+                MATCH (n) 
+                RETURN max(n.updated_at) as last_update, count(n) as node_count
+            """)
+            if staleness_result:
+                last_update = staleness_result[0].get("last_update")
+                node_count = staleness_result[0].get("node_count", 0)
+                
+                is_stale = True  # Mark as stale if no SyncMetadata exists
+                if last_update:
+                    last_update_dt = datetime.fromisoformat(str(last_update).replace('Z', '+00:00'))
+                    hours_since_update = (datetime.now(timezone.utc) - last_update_dt).total_seconds() / 3600
+                    is_stale = hours_since_update > 24
+                
+                components["graph_freshness"] = {
+                    "name": "Graph Data Freshness",
+                    "status": "stale" if is_stale else "fresh",
+                    "latency_ms": 0.0,
+                    "last_check": datetime.now(timezone.utc).isoformat(),
+                }
+                if is_stale:
+                    overall_healthy = False
     except Exception as e:
         components["graph_freshness"] = {
             "name": "Graph Data Freshness",
@@ -744,6 +793,92 @@ def get_health() -> Dict[str, Any]:
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "components": components,
         "overall_healthy": overall_healthy,
+    }
+
+
+@app.get("/system-health-detailed", tags=["health"])
+def get_system_health_detailed() -> Dict[str, Any]:
+    """
+    Get detailed system health report.
+    
+    Performs comprehensive validation including:
+    - Data quality (mock data count, incident count, last sync)
+    - GitHub sync status
+    - Scheduler job execution
+    - Agent activity monitoring
+    - API error rates
+    
+    Returns detailed health metrics for monitoring and alerting.
+    """
+    from scripts.health_check import (
+        check_data_quality,
+        check_github_sync,
+        check_scheduler_jobs,
+        check_agent_execution
+    )
+    
+    timestamp = datetime.now(timezone.utc).isoformat()
+    
+    # Run all health checks
+    try:
+        data_quality = check_data_quality()
+    except Exception as e:
+        data_quality = {"status": "error", "message": str(e), "healthy": False}
+    
+    try:
+        github_sync = check_github_sync()
+    except Exception as e:
+        github_sync = {"status": "error", "message": str(e), "healthy": False}
+    
+    try:
+        scheduler_status = check_scheduler_jobs()
+    except Exception as e:
+        scheduler_status = {"status": "error", "message": str(e), "healthy": False}
+    
+    try:
+        agent_status = check_agent_execution()
+    except Exception as e:
+        agent_status = {"status": "error", "message": str(e), "healthy": False}
+    
+    # Check API health
+    try:
+        client = _get_neo4j_client()
+        neo4j_health = client.health_check()
+        api_status = {
+            "status": "healthy" if neo4j_health.get("status") == "healthy" else "unhealthy",
+            "neo4j_connected": neo4j_health.get("status") == "healthy",
+            "healthy": neo4j_health.get("status") == "healthy"
+        }
+    except Exception as e:
+        api_status = {"status": "error", "message": str(e), "healthy": False}
+    
+    # Determine overall status
+    all_healthy = (
+        data_quality.get("healthy", False) and
+        github_sync.get("healthy", False) and
+        scheduler_status.get("healthy", False) and
+        agent_status.get("healthy", False) and
+        api_status.get("healthy", False)
+    )
+    
+    return {
+        "timestamp": timestamp,
+        "overall_status": "healthy" if all_healthy else "unhealthy",
+        "data_quality": data_quality,
+        "github_sync": github_sync,
+        "scheduler": scheduler_status,
+        "agents": agent_status,
+        "api": api_status,
+        "summary": {
+            "total_incidents": data_quality.get("total_incidents", 0),
+            "mock_data_count": data_quality.get("mock_data_count", 0),
+            "last_sync": data_quality.get("last_sync"),
+            "recent_activity_24h": data_quality.get("recent_activity_24h", 0),
+            "github_sync_hours_ago": github_sync.get("hours_ago"),
+            "scheduler_jobs_tracked": len(scheduler_status.get("jobs_tracked", [])),
+            "scheduler_errors": scheduler_status.get("recent_errors_count", 0),
+            "agents_active": agent_status.get("status") == "active"
+        }
     }
 
 
@@ -893,6 +1028,186 @@ def get_node_details(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch node details: {str(e)}")
+
+
+# ============================================================================
+# Manual Trigger Endpoints
+# ============================================================================
+
+@app.post("/trigger-sync", tags=["manual-triggers"])
+def trigger_sync() -> Dict[str, Any]:
+    """
+    Manually trigger GitHub sync and transformation.
+    
+    Fetches new/updated issues from GitHub and transforms them into Neo4j nodes.
+    """
+    try:
+        # Sync from GitHub
+        issues = incremental_sync()
+        
+        # Transform to Neo4j
+        stats = transform_issues_to_graph()
+        
+        return {
+            "status": "success",
+            "issues_synced": len(issues) if isinstance(issues, list) else issues,
+            "nodes_created": stats,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Sync failed: {str(e)}")
+
+
+@app.post("/analyze-now", tags=["manual-triggers"])
+def analyze_now() -> Dict[str, Any]:
+    """
+    Manually trigger full analysis pipeline.
+    
+    Runs RCA analysis, priority estimation, and strategy generation.
+    """
+    try:
+        from agents.rca_agent import RCAAgent
+        from agents.priority_agent import PriorityAgent
+        from agents.strategy_agent import StrategyAgent
+        
+        results = {}
+        
+        # Run RCA Agent
+        rca_agent = RCAAgent()
+        rca_result = rca_agent.run()
+        results["rca_analysis"] = rca_result
+        
+        # Run Priority Agent
+        priority_agent = PriorityAgent()
+        priority_result = priority_agent.run()
+        results["priority_estimation"] = priority_result
+        
+        # Run Strategy Agent
+        strategy_agent = StrategyAgent()
+        strategy_agent.run()
+        results["strategy_generation"] = "completed"
+        
+        return {
+            "status": "success",
+            "results": results,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+    except ImportError as e:
+        raise HTTPException(status_code=503, detail=f"Agent not available: {str(e)}. Ensure RCA-48, RCA-49, RCA-50 tasks are completed.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+@app.post("/create-pattern-clusters", tags=["manual-triggers"])
+def create_pattern_clusters_manual() -> Dict[str, Any]:
+    """
+    Manually create PatternCluster nodes from incident titles/descriptions.
+    Groups incidents by extracted pattern signatures and creates PatternCluster
+    nodes for groups with 3+ incidents.
+    """
+    import uuid
+    from collections import defaultdict
+    
+    def extract_signature(title: str, body: str = "") -> str:
+        combined = (title + " " + body).lower()
+        cats = {
+            'resource_exhaustion': ['timeout', 'memory', 'cpu', 'oom'],
+            'config_drift': ['config', 'deploy', 'rollback'],
+            'race_condition': ['race', 'deadlock', 'concurrency'],
+            'infra_failure': ['infrastructure', 'network', 'dns'],
+            'data_corruption': ['database', 'corrupt'],
+            'dependency_failure': ['dependency', 'external'],
+        }
+        comps = ['payment', 'redis', 'postgres', 'kafka', 'api', 'webhook', 'connector', 'database']
+        cat = next((c for c, kws in cats.items() if any(kw in combined for kw in kws)), 'general')
+        comp = next((c for c in sorted(comps, key=len, reverse=True) if c in combined), 'system')
+        return f"{cat}/{comp}"
+    
+    client = _get_neo4j_client()
+    try:
+        incidents = client.read("""
+            MATCH (i:Incident)
+            RETURN i.id AS id, i.title AS title, i.body AS body,
+                   i.occurred_at AS occurred_at, i.created_at AS created_at,
+                   i.affected_flows AS affected_flows
+        """)
+        groups = defaultdict(list)
+        for inc in incidents:
+            sig = extract_signature(inc.get('title', ''), inc.get('body', ''))
+            groups[sig].append(inc)
+        existing = {r['sig'] for r in client.read("MATCH (pc:PatternCluster) RETURN pc.pattern_signature AS sig") if r.get('sig')}
+        created, skipped = [], []
+        for sig, incs in groups.items():
+            if len(incs) < 3:
+                skipped.append(f"{sig} ({len(incs)} incidents)")
+                continue
+            if sig in existing:
+                skipped.append(f"{sig} (exists)")
+                continue
+            cid = f"pc-{uuid.uuid4().hex[:12]}"
+            parts = sig.split('/', 1)
+            dates = [datetime.fromisoformat(str(inc.get('occurred_at') or inc.get('created_at')).replace('Z','+00:00')) for inc in incs if inc.get('occurred_at') or inc.get('created_at')]
+            first = min(dates) if dates else datetime.now(timezone.utc)
+            last = max(dates) if dates else datetime.now(timezone.utc)
+            trend = 'stable'
+            if dates:
+                now = datetime.now(timezone.utc)
+                recent = len([d for d in dates if (now - d).days <= 30])
+                prev = len([d for d in dates if 30 < (now - d).days <= 60])
+                trend = 'worsening' if recent > prev else 'improving' if recent < prev else 'stable'
+            client.write("""
+                CREATE (pc:PatternCluster {
+                    id: $id, pattern_signature: $sig, name: $name, description: $desc,
+                    frequency: $freq, trend: $trend, root_cause_category: $cat,
+                    affected_components: $comps, first_occurrence: $first, last_occurrence: $last,
+                    created_at: datetime(), updated_at: datetime()
+                })
+            """, {'id': cid, 'sig': sig, 'name': f"{parts[0].replace('_',' ').title()}: {parts[1].replace('_',' ').title()}",
+                  'desc': f"Pattern affecting {parts[1]} - {len(incs)} incidents", 'freq': len(incs),
+                  'trend': trend, 'cat': parts[0], 'comps': list(set(sum([inc.get('affected_flows',[]) or [] for inc in incs], [])))[:5],
+                  'first': first, 'last': last})
+            for inc in incs:
+                client.write("MATCH (i:Incident {id: $iid}), (pc:PatternCluster {id: $cid}) CREATE (i)-[:EXHIBITS]->(pc)", {'iid': inc['id'], 'cid': cid})
+            created.append(sig)
+        return {"status": "success", "created": len(created), "created_patterns": created, "skipped": len(skipped), "skipped_patterns": skipped[:10]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed: {str(e)}")
+
+
+@app.get("/system-status", tags=["manual-triggers"])
+def system_status() -> Dict[str, Any]:
+    """
+    Get current system status and last sync information.
+    """
+    try:
+        client = _get_neo4j_client()
+        
+        # Get node counts
+        counts = client.read("""
+            MATCH (i:Incident) WITH count(i) as incidents
+            MATCH (ai:ActionItem) WITH incidents, count(ai) as actions
+            MATCH (pc:PatternCluster) WITH incidents, actions, count(pc) as patterns
+            MATCH (s:Strategy) WITH incidents, actions, patterns, count(s) as strategies
+            RETURN incidents, actions, patterns, strategies
+        """)
+        
+        # Get sync state
+        sync_state = load_sync_state()
+        
+        return {
+            "status": "healthy",
+            "last_sync": sync_state.get("last_sync"),
+            "node_counts": {
+                "incidents": counts[0]["incidents"] if counts else 0,
+                "action_items": counts[0]["actions"] if counts else 0,
+                "patterns": counts[0]["patterns"] if counts else 0,
+                "strategies": counts[0]["strategies"] if counts else 0
+            },
+            "repository": os.getenv("GITHUB_REPO", "unknown"),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Status check failed: {str(e)}")
 
 
 # ============================================================================

@@ -1,6 +1,9 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useMemo } from 'react'
+import { StatusPill } from './ui/StatusPill'
+import { TypeBadge } from './ui/TypeBadge'
+import { SkeletonCard } from './ui/Skeleton'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
 
 const ProgressTracker = ({ limit = 100 }) => {
   const [items, setItems] = useState([])
@@ -8,10 +11,13 @@ const ProgressTracker = ({ limit = 100 }) => {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [statusFilter, setStatusFilter] = useState('all')
+  const [typeFilter, setTypeFilter] = useState('all')
+  const [effectivenessFilter, setEffectivenessFilter] = useState('all')
+  const [selectedItem, setSelectedItem] = useState(null)
 
   useEffect(() => {
     fetchProgress()
-  }, [limit])
+  }, [])
 
   const fetchProgress = async () => {
     try {
@@ -28,52 +34,100 @@ const ProgressTracker = ({ limit = 100 }) => {
     }
   }
 
-  const getStatusClass = (status) => {
-    const classes = {
-      'open': 'status-open',
-      'in_progress': 'status-progress',
-      'resolved': 'status-resolved',
-      'closed': 'status-closed',
-      'deferred': 'status-deferred'
+  const filteredItems = useMemo(() => {
+    return items.filter(item => {
+      // Status filter
+      if (statusFilter === 'open') {
+        if (item.status !== 'open') return false
+      } else if (statusFilter === 'in_progress') {
+        if (item.status !== 'in_progress') return false
+      } else if (statusFilter === 'done') {
+        if (!['resolved', 'closed'].includes(item.status)) return false
+      }
+
+      // Type filter
+      if (typeFilter !== 'all' && item.type !== typeFilter) return false
+
+      // Effectiveness filter
+      if (effectivenessFilter === 'effective' && item.effective !== true) return false
+      if (effectivenessFilter === 'ineffective' && item.effective !== false) return false
+      if (effectivenessFilter === 'monitoring' && item.effectiveness_status !== 'monitoring') return false
+
+      return true
+    })
+  }, [items, statusFilter, typeFilter, effectivenessFilter])
+
+  const groupedItems = useMemo(() => {
+    const groups = {
+      open: [],
+      in_progress: [],
+      resolved: [],
+      deferred: []
     }
-    return classes[status] || 'status-default'
+
+    filteredItems.forEach(item => {
+      if (groups[item.status]) {
+        groups[item.status].push(item)
+      } else if (['resolved', 'closed'].includes(item.status)) {
+        groups.resolved.push(item)
+      } else {
+        groups.open.push(item)
+      }
+    })
+
+    return groups
+  }, [filteredItems])
+
+  const getEffectivenessBadge = (item) => {
+    if (item.effective === true) {
+      return { icon: '✓', class: 'effective-yes', label: 'Verified Effective' }
+    }
+    if (item.effective === false) {
+      return { icon: '✗', class: 'effective-no', label: 'Ineffective' }
+    }
+    if (item.effectiveness_status === 'monitoring') {
+      const daysRemaining = item.monitoring_days_remaining || 30
+      return { icon: '⏳', class: 'effective-monitoring', label: `${daysRemaining} days left` }
+    }
+    return null
   }
 
-  const getStatusIcon = (status) => {
-    if (status === 'resolved') return '✅'
-    if (status === 'in_progress') return '🔄'
-    if (status === 'deferred') return '⏸️'
-    return '⭕'
+  const getComplexityColor = (complexity) => {
+    if (complexity === 'low') return '#22C55E'
+    if (complexity === 'high') return '#F97316'
+    return '#EAB308'
   }
 
-  const getComplexityClass = (complexity) => {
-    if (complexity === 'low') return 'complexity-low'
-    if (complexity === 'high') return 'complexity-high'
-    return 'complexity-medium'
+  const formatDate = (dateStr) => {
+    if (!dateStr) return 'Unknown'
+    const date = new Date(dateStr)
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
   }
 
-  const getEffectivenessBadge = (effective) => {
-    if (effective === true) return { icon: '✓', class: 'effective-yes', label: 'Effective' }
-    if (effective === false) return { icon: '✗', class: 'effective-no', label: 'Ineffective' }
-    return { icon: '?', class: 'effective-unknown', label: 'Pending' }
+  const getDuration = (created, resolved) => {
+    if (!created || !resolved) return null
+    const start = new Date(created)
+    const end = new Date(resolved)
+    const days = Math.floor((end - start) / (1000 * 60 * 60 * 24))
+    return `${days} days`
   }
-
-  const filteredItems = statusFilter === 'all' 
-    ? items 
-    : items.filter(item => {
-        if (statusFilter === 'done') return ['resolved', 'closed'].includes(item.status)
-        return item.status === statusFilter
-      })
 
   if (loading) {
     return (
       <div className="section-card progress-tracker">
         <div className="card-header">
-          <h3>Progress Tracker</h3>
+          <h3>Progress</h3>
         </div>
-        <div className="card-content loading">
-          <div className="loading-spinner small"></div>
-          <p>Loading progress...</p>
+        <div className="progress-three-panel">
+          <div className="filters-sidebar">
+            <SkeletonCard lines={4} />
+          </div>
+          <div className="items-list">
+            <SkeletonCard lines={6} />
+          </div>
+          <div className="detail-panel">
+            <SkeletonCard lines={5} />
+          </div>
         </div>
       </div>
     )
@@ -83,11 +137,11 @@ const ProgressTracker = ({ limit = 100 }) => {
     return (
       <div className="section-card progress-tracker">
         <div className="card-header">
-          <h3>Progress Tracker</h3>
+          <h3>Progress</h3>
         </div>
-        <div className="card-content error">
+        <div className="card-content error p-4">
           <p>Error: {error}</p>
-          <button onClick={fetchProgress}>Retry</button>
+          <button onClick={fetchProgress} className="btn-primary mt-2">Retry</button>
         </div>
       </div>
     )
@@ -99,142 +153,338 @@ const ProgressTracker = ({ limit = 100 }) => {
         <h3>Progress Tracker</h3>
         <span className="item-count">{filteredItems.length} items</span>
       </div>
-      
+
+      {/* Effectiveness Summary Bar */}
       {stats && (
-        <div className="stats-bar">
-          <div className="stat-item">
-            <span className="stat-number">{stats.total}</span>
-            <span className="stat-label">Total</span>
+        <div className="effectiveness-summary">
+          <div className="summary-stats">
+            <div className="summary-stat">
+              <span className="summary-value">{stats.resolved_this_quarter || 0}</span>
+              <span className="summary-label">Resolved this quarter</span>
+            </div>
+            <div className="summary-stat effective">
+              <span className="summary-value">{stats.effective_count || 0}</span>
+              <span className="summary-label">
+                Effective ({stats.resolved_this_quarter ? Math.round((stats.effective_count / stats.resolved_this_quarter) * 100) : 0}%)
+              </span>
+            </div>
+            <div className="summary-stat ineffective">
+              <span className="summary-value">{stats.ineffective_count || 0}</span>
+              <span className="summary-label">
+                Ineffective ({stats.resolved_this_quarter ? Math.round((stats.ineffective_count / stats.resolved_this_quarter) * 100) : 0}%)
+              </span>
+            </div>
+            <div className="summary-stat monitoring">
+              <span className="summary-value">{stats.monitoring_count || 0}</span>
+              <span className="summary-label">Monitoring</span>
+            </div>
           </div>
-          <div className="stat-item">
-            <span className="stat-number highlight">{stats.open}</span>
-            <span className="stat-label">Open</span>
+          <div className="summary-bar">
+            <div 
+              className="summary-fill effective" 
+              style={{ 
+                width: `${stats.resolved_this_quarter ? (stats.effective_count / stats.resolved_this_quarter) * 100 : 0}%` 
+              }}
+            />
+            <div 
+              className="summary-fill ineffective" 
+              style={{ 
+                width: `${stats.resolved_this_quarter ? (stats.ineffective_count / stats.resolved_this_quarter) * 100 : 0}%` 
+              }}
+            />
+            <div 
+              className="summary-fill monitoring" 
+              style={{ 
+                width: `${stats.resolved_this_quarter ? (stats.monitoring_count / stats.resolved_this_quarter) * 100 : 0}%` 
+              }}
+            />
           </div>
-          <div className="stat-item">
-            <span className="stat-number">{stats.in_progress}</span>
-            <span className="stat-label">In Progress</span>
-          </div>
-          <div className="stat-item">
-            <span className="stat-number success">{stats.resolved}</span>
-            <span className="stat-label">Resolved</span>
-          </div>
-          {(stats.effective_count > 0 || stats.ineffective_count > 0) && (
-            <>
-              <div className="stat-divider"></div>
-              <div className="stat-item">
-                <span className="stat-number success">{stats.effective_count}</span>
-                <span className="stat-label">Effective</span>
-              </div>
-              <div className="stat-item">
-                <span className="stat-number warning">{stats.ineffective_count}</span>
-                <span className="stat-label">Ineffective</span>
-              </div>
-            </>
-          )}
         </div>
       )}
       
-      <div className="card-controls">
-        <div className="filter-group">
-          <button 
-            className={`filter-btn ${statusFilter === 'all' ? 'active' : ''}`}
-            onClick={() => setStatusFilter('all')}
-          >
-            All
-          </button>
-          <button 
-            className={`filter-btn ${statusFilter === 'open' ? 'active' : ''}`}
-            onClick={() => setStatusFilter('open')}
-          >
-            Open
-          </button>
-          <button 
-            className={`filter-btn ${statusFilter === 'in_progress' ? 'active' : ''}`}
-            onClick={() => setStatusFilter('in_progress')}
-          >
-            In Progress
-          </button>
-          <button 
-            className={`filter-btn ${statusFilter === 'done' ? 'active' : ''}`}
-            onClick={() => setStatusFilter('done')}
-          >
-            Done
+      <div className="progress-three-panel">
+        {/* Left Panel - Filters */}
+        <div className="filters-sidebar">
+          <div className="filter-section">
+            <h5>Status</h5>
+            <div className="filter-options">
+              <label className={`filter-option ${statusFilter === 'all' ? 'active' : ''}`}>
+                <input 
+                  type="radio" 
+                  name="status" 
+                  value="all" 
+                  checked={statusFilter === 'all'}
+                  onChange={(e) => setStatusFilter(e.target.value)}
+                />
+                <span>All ({stats?.total || 0})</span>
+              </label>
+              <label className={`filter-option ${statusFilter === 'open' ? 'active' : ''}`}>
+                <input 
+                  type="radio" 
+                  name="status" 
+                  value="open" 
+                  checked={statusFilter === 'open'}
+                  onChange={(e) => setStatusFilter(e.target.value)}
+                />
+                <span>Open ({stats?.open || 0})</span>
+              </label>
+              <label className={`filter-option ${statusFilter === 'in_progress' ? 'active' : ''}`}>
+                <input 
+                  type="radio" 
+                  name="status" 
+                  value="in_progress" 
+                  checked={statusFilter === 'in_progress'}
+                  onChange={(e) => setStatusFilter(e.target.value)}
+                />
+                <span>In Progress ({stats?.in_progress || 0})</span>
+              </label>
+              <label className={`filter-option ${statusFilter === 'done' ? 'active' : ''}`}>
+                <input 
+                  type="radio" 
+                  name="status" 
+                  value="done" 
+                  checked={statusFilter === 'done'}
+                  onChange={(e) => setStatusFilter(e.target.value)}
+                />
+                <span>Done ({(stats?.resolved || 0) + (stats?.closed || 0)})</span>
+              </label>
+            </div>
+          </div>
+
+          <div className="filter-section">
+            <h5>Type</h5>
+            <div className="filter-options">
+              <label className={`filter-option ${typeFilter === 'all' ? 'active' : ''}`}>
+                <input 
+                  type="radio" 
+                  name="type" 
+                  value="all" 
+                  checked={typeFilter === 'all'}
+                  onChange={(e) => setTypeFilter(e.target.value)}
+                />
+                <span>All</span>
+              </label>
+              <label className={`filter-option ${typeFilter === 'action_item' ? 'active' : ''}`}>
+                <input 
+                  type="radio" 
+                  name="type" 
+                  value="action_item" 
+                  checked={typeFilter === 'action_item'}
+                  onChange={(e) => setTypeFilter(e.target.value)}
+                />
+                <span>Action Items</span>
+              </label>
+              <label className={`filter-option ${typeFilter === 'strategy' ? 'active' : ''}`}>
+                <input 
+                  type="radio" 
+                  name="type" 
+                  value="strategy" 
+                  checked={typeFilter === 'strategy'}
+                  onChange={(e) => setTypeFilter(e.target.value)}
+                />
+                <span>Strategies</span>
+              </label>
+            </div>
+          </div>
+
+          <div className="filter-section">
+            <h5>Effectiveness</h5>
+            <div className="filter-options">
+              <label className={`filter-option ${effectivenessFilter === 'all' ? 'active' : ''}`}>
+                <input 
+                  type="radio" 
+                  name="effectiveness" 
+                  value="all" 
+                  checked={effectivenessFilter === 'all'}
+                  onChange={(e) => setEffectivenessFilter(e.target.value)}
+                />
+                <span>All</span>
+              </label>
+              <label className={`filter-option ${effectivenessFilter === 'effective' ? 'active' : ''}`}>
+                <input 
+                  type="radio" 
+                  name="effectiveness" 
+                  value="effective" 
+                  checked={effectivenessFilter === 'effective'}
+                  onChange={(e) => setEffectivenessFilter(e.target.value)}
+                />
+                <span>Verified Effective</span>
+              </label>
+              <label className={`filter-option ${effectivenessFilter === 'ineffective' ? 'active' : ''}`}>
+                <input 
+                  type="radio" 
+                  name="effectiveness" 
+                  value="ineffective" 
+                  checked={effectivenessFilter === 'ineffective'}
+                  onChange={(e) => setEffectivenessFilter(e.target.value)}
+                />
+                <span>Ineffective</span>
+              </label>
+              <label className={`filter-option ${effectivenessFilter === 'monitoring' ? 'active' : ''}`}>
+                <input 
+                  type="radio" 
+                  name="effectiveness" 
+                  value="monitoring" 
+                  checked={effectivenessFilter === 'monitoring'}
+                  onChange={(e) => setEffectivenessFilter(e.target.value)}
+                />
+                <span>Monitoring</span>
+              </label>
+            </div>
+          </div>
+
+          <button onClick={fetchProgress} className="btn-refresh-full" title="Refresh">
+            🔄 Refresh
           </button>
         </div>
-        <button onClick={fetchProgress} className="btn-refresh" title="Refresh">
-          🔄
-        </button>
-      </div>
-      
-      <div className="card-content">
-        <div className="progress-list">
+
+        {/* Center Panel - Items List */}
+        <div className="items-list">
           {filteredItems.length === 0 ? (
-            <p className="empty-state">No action items found</p>
+            <div className="empty-state">No items match the selected filters</div>
           ) : (
-            filteredItems.map((item) => {
-              const effectiveness = getEffectivenessBadge(item.effective)
-              return (
-                <div key={item.id} className="progress-item">
-                  <div className="item-main">
-                    <div className={`status-icon ${getStatusClass(item.status)}`}>
-                      {getStatusIcon(item.status)}
-                    </div>
-                    <div className="item-info">
-                      <h4 className="item-title">{item.title}</h4>
-                      {item.pattern_cluster_name && (
-                        <span className="cluster-tag">{item.pattern_cluster_name}</span>
-                      )}
-                    </div>
-                  </div>
-                  
-                  <div className="item-meta">
-                    <div className={`complexity-badge ${getComplexityClass(item.implementation_complexity)}`}>
-                      {item.implementation_complexity}
-                    </div>
-                    
-                    <div className="priority-score">
-                      <span className="score-value">{Math.round(item.priority_score)}</span>
-                      <span className="score-label">priority</span>
-                    </div>
-                    
-                    {item.assignee && (
-                      <div className="assignee-badge">
-                        👤 {item.assignee}
-                      </div>
-                    )}
-                    
-                    {(item.status === 'resolved' || item.status === 'closed') && (
-                      <div className={`effectiveness-badge ${effectiveness.class}`}>
-                        {effectiveness.icon} {effectiveness.label}
-                      </div>
-                    )}
-                    
-                    {item.created_at && (
-                      <div className="date-info">
-                        <span className="date-label">Created:</span>
-                        <span className="date-value">
-                          {new Date(item.created_at).toLocaleDateString()}
-                        </span>
-                      </div>
-                    )}
-                    
-                    {item.resolved_at && (
-                      <div className="date-info resolved">
-                        <span className="date-label">Resolved:</span>
-                        <span className="date-value">
-                          {new Date(item.resolved_at).toLocaleDateString()}
-                        </span>
-                      </div>
-                    )}
-                  </div>
+            <>
+              {groupedItems.open.length > 0 && (
+                <div className="item-group">
+                  <h6 className="group-header">Open ({groupedItems.open.length})</h6>
+                  {groupedItems.open.map(renderItemCard)}
                 </div>
-              )
-            })
+              )}
+              {groupedItems.in_progress.length > 0 && (
+                <div className="item-group">
+                  <h6 className="group-header">In Progress ({groupedItems.in_progress.length})</h6>
+                  {groupedItems.in_progress.map(renderItemCard)}
+                </div>
+              )}
+              {groupedItems.resolved.length > 0 && (
+                <div className="item-group">
+                  <h6 className="group-header">Resolved ({groupedItems.resolved.length})</h6>
+                  {groupedItems.resolved.map(renderItemCard)}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Right Panel - Detail */}
+        <div className="detail-sidebar">
+          {selectedItem ? (
+            <div className="item-detail">
+              <div className="detail-header">
+                <TypeBadge type={selectedItem.type === 'action_item' ? 'action' : 'strategy'} />
+                <StatusPill status={selectedItem.status} />
+              </div>
+              
+              <h5 className="detail-title">{selectedItem.title}</h5>
+              
+              {selectedItem.description && (
+                <p className="detail-description">{selectedItem.description}</p>
+              )}
+
+              <div className="detail-meta">
+                {selectedItem.pattern_cluster_name && (
+                  <div className="meta-row">
+                    <span className="meta-label">Cluster:</span>
+                    <span className="cluster-tag-sm">{selectedItem.pattern_cluster_name}</span>
+                  </div>
+                )}
+                <div className="meta-row">
+                  <span className="meta-label">Priority:</span>
+                  <span className="meta-value">{selectedItem.priority_score?.toFixed(1)}</span>
+                </div>
+                {selectedItem.assignee && (
+                  <div className="meta-row">
+                    <span className="meta-label">Assignee:</span>
+                    <span className="meta-value">@{selectedItem.assignee}</span>
+                  </div>
+                )}
+                {selectedItem.created_at && (
+                  <div className="meta-row">
+                    <span className="meta-label">Created:</span>
+                    <span className="meta-value">{formatDate(selectedItem.created_at)}</span>
+                  </div>
+                )}
+                {selectedItem.resolved_at && (
+                  <div className="meta-row">
+                    <span className="meta-label">Resolved:</span>
+                    <span className="meta-value">{formatDate(selectedItem.resolved_at)}</span>
+                  </div>
+                )}
+                {selectedItem.created_at && selectedItem.resolved_at && (
+                  <div className="meta-row">
+                    <span className="meta-label">Duration:</span>
+                    <span className="meta-value">{getDuration(selectedItem.created_at, selectedItem.resolved_at)}</span>
+                  </div>
+                )}
+              </div>
+
+              {(selectedItem.status === 'resolved' || selectedItem.status === 'closed') && (
+                <div className="detail-effectiveness">
+                  <h6>Effectiveness</h6>
+                  {(() => {
+                    const badge = getEffectivenessBadge(selectedItem)
+                    if (!badge) return <p className="empty-sub">Not yet evaluated</p>
+                    return (
+                      <div className={`effectiveness-display ${badge.class}`}>
+                        <span className="effectiveness-icon">{badge.icon}</span>
+                        <span className="effectiveness-label">{badge.label}</span>
+                      </div>
+                    )
+                  })()}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="empty-detail">
+              <p>Select an item to view details</p>
+            </div>
           )}
         </div>
       </div>
     </div>
   )
+
+  function renderItemCard(item) {
+    const effectiveness = getEffectivenessBadge(item)
+    return (
+      <div 
+        key={item.id} 
+        className={`progress-card ${selectedItem?.id === item.id ? 'selected' : ''}`}
+        onClick={() => setSelectedItem(item)}
+      >
+        <div className="card-main">
+          <TypeBadge type={item.type === 'action_item' ? 'action' : 'strategy'} size="sm" />
+          <span className="card-title" title={item.title}>{item.title}</span>
+          <StatusPill status={item.status} size="sm" />
+        </div>
+        <div className="card-meta">
+          {item.pattern_cluster_name && (
+            <span className="meta-cluster">{item.pattern_cluster_name}</span>
+          )}
+          <span 
+            className="meta-priority"
+            style={{ color: getComplexityColor(item.implementation_complexity) }}
+          >
+            {item.priority_score?.toFixed(1)}
+          </span>
+          {item.assignee && (
+            <span className="meta-assignee">@{item.assignee}</span>
+          )}
+        </div>
+        <div className="card-footer">
+          <span className="footer-date">
+            Created {formatDate(item.created_at)}
+            {item.resolved_at && ` • Resolved ${formatDate(item.resolved_at)}`}
+          </span>
+          {effectiveness && (
+            <span className={`footer-effectiveness ${effectiveness.class}`}>
+              {effectiveness.icon} {effectiveness.label}
+            </span>
+          )}
+        </div>
+      </div>
+    )
+  }
 }
 
 export default ProgressTracker
