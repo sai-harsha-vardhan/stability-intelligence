@@ -176,7 +176,7 @@ LIMIT $limit
 
 GET_PATTERN_CLUSTERS = """
 MATCH (pc:PatternCluster)
-OPTIONAL MATCH (pc)<-[:BELONGS_TO_CLUSTER]-(i:Incident)
+OPTIONAL MATCH (pc)<-[:EXHIBITS]-(i:Incident)
 OPTIONAL MATCH (pc)<-[:BLOCKS_PATTERN]-(ai:ActionItem {status: 'open'})
 OPTIONAL MATCH (pc)<-[:ADDRESSES_PATTERN]-(s:Strategy)
 RETURN pc.id AS id,

@@ -1,5 +1,5 @@
 # Security Scanning Pipeline
-# Runs Trivy filesystem scanner, Snyk dependency scan, and Bandit static analysis
+# Runs Trivy container and filesystem scanners, CodeQL analysis, Snyk dependency scan, and Bandit static analysis
 # on every push and PR to main
 
 name: Security Scan
@@ -18,6 +18,64 @@ permissions:
   security-events: write
 
 jobs:
+  trivy-container-scan:
+    name: Trivy Container Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Build dashboard Docker image
+        run: docker build -f Dockerfile.dashboard -t stability-dashboard:latest .
+
+      - name: Run Trivy vulnerability scanner on dashboard image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'stability-dashboard:latest'
+          format: 'sarif'
+          output: 'trivy-dashboard-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Build agents Docker image
+        run: docker build -f Dockerfile.agents -t stability-agents:latest .
+
+      - name: Run Trivy vulnerability scanner on agents image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'stability-agents:latest'
+          format: 'sarif'
+          output: 'trivy-agents-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy dashboard scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: 'trivy-dashboard-results.sarif'
+          category: 'trivy-container-dashboard'
+
+      - name: Upload Trivy agents scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: 'trivy-agents-results.sarif'
+          category: 'trivy-container-agents'
+
+      - name: Check for critical vulnerabilities
+        run: |
+          if grep -q '"severity": "CRITICAL"' trivy-dashboard-results.sarif 2>/dev/null || grep -q '"severity": "CRITICAL"' trivy-agents-results.sarif 2>/dev/null; then
+            echo "❌ CRITICAL vulnerabilities found"
+            exit 1
+          fi
+
   trivy-filesystem-scan:
     name: Trivy Filesystem Scan
     runs-on: ubuntu-latest
@@ -50,6 +108,24 @@ jobs:
             echo "❌ CRITICAL vulnerabilities found"
             exit 1
           fi
+
+  codeql-analysis:
+    name: CodeQL Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: python, javascript
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
 
   snyk-dependency-scan:
     name: Snyk Dependency Scan
