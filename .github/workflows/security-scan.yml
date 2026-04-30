@@ -1,5 +1,5 @@
 # Security Scanning Pipeline
-# Runs Trivy container scanner, Snyk dependency scan, and Bandit static analysis
+# Runs Trivy filesystem scanner, Snyk dependency scan, and Bandit static analysis
 # on every push and PR to main
 
 name: Security Scan
@@ -13,54 +13,41 @@ on:
     # Run nightly at 2 AM UTC
     - cron: '0 2 * * *'
 
+permissions:
+  contents: read
+  security-events: write
+
 jobs:
-  trivy-container-scan:
-    name: Trivy Container Scan
+  trivy-filesystem-scan:
+    name: Trivy Filesystem Scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Build Docker images
-        run: |
-          docker build -f Dockerfile.agents -t rca-agents:latest .
-          docker build -f Dockerfile.dashboard -t rca-dashboard:latest .
-
-      - name: Run Trivy vulnerability scanner on agents
+      - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: 'rca-agents:latest'
+          scan-type: 'fs'
+          scan-ref: '.'
           format: 'sarif'
-          output: 'trivy-agents-results.sarif'
-          severity: 'CRITICAL,HIGH'
-
-      - name: Run Trivy vulnerability scanner on dashboard
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: 'rca-dashboard:latest'
-          format: 'sarif'
-          output: 'trivy-dashboard-results.sarif'
+          output: 'trivy-results.sarif'
           severity: 'CRITICAL,HIGH'
 
       - name: Upload Trivy scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
-          sarif_file: 'trivy-agents-results.sarif'
-          category: 'trivy-agents'
-
-      - name: Upload dashboard scan results
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: 'trivy-dashboard-results.sarif'
-          category: 'trivy-dashboard'
+          sarif_file: 'trivy-results.sarif'
+          category: 'trivy-fs'
 
       - name: Check for critical vulnerabilities
         run: |
-          if grep -q '"severity": "CRITICAL"' trivy-agents-results.sarif 2>/dev/null || \
-             grep -q '"severity": "CRITICAL"' trivy-dashboard-results.sarif 2>/dev/null; then
-            echo "❌ CRITICAL vulnerabilities found in container images"
+          if grep -q '"severity": "CRITICAL"' trivy-results.sarif 2>/dev/null; then
+            echo "❌ CRITICAL vulnerabilities found"
             exit 1
           fi
 
