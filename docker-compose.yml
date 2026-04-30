@@ -34,14 +34,39 @@ services:
       - langfuse_db:/var/lib/postgresql/data
     restart: unless-stopped
 
+  langfuse-clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    container_name: stability-langfuse-clickhouse
+    environment:
+      CLICKHOUSE_DB: langfuse
+      CLICKHOUSE_USER: langfuse
+      CLICKHOUSE_PASSWORD: changeme_clickhouse_pass123
+    volumes:
+      - langfuse_clickhouse_data:/var/lib/clickhouse
+    ports:
+      - "8123:8123"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   langfuse:
     image: langfuse/langfuse:latest
     container_name: stability-langfuse
-    depends_on: [langfuse-db]
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
     ports:
       - "3000:3000"
     environment:
       DATABASE_URL: postgresql://langfuse:langfuse_secret@langfuse-db:5432/langfuse
+      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+      CLICKHOUSE_USER: langfuse
+      CLICKHOUSE_PASSWORD: changeme_clickhouse_pass123
       NEXTAUTH_SECRET: changeme-nextauth-secret
       NEXTAUTH_URL: http://localhost:3000
       SALT: changeme-salt
@@ -138,4 +163,5 @@ volumes:
   neo4j_data:
   neo4j_logs:
   langfuse_db:
+  langfuse_clickhouse_data:
   agent_logs:
