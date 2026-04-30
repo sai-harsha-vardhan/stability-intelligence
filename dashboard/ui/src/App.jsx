@@ -15,6 +15,7 @@ function App() {
   const [systemStats, setSystemStats] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [graphFocusNode, setGraphFocusNode] = useState(null)
 
   useEffect(() => {
     fetchStats()
@@ -33,6 +34,11 @@ function App() {
     }
   }
 
+  const navigateToGraph = (nodeId) => {
+    setGraphFocusNode(nodeId)
+    setActiveTab('graph')
+  }
+
   const renderTabContent = () => {
     switch (activeTab) {
       case 'overview':
@@ -43,8 +49,8 @@ function App() {
               <ChangeFeed />
             </div>
             <div className="grid-row">
-              <PriorityRanking limit={10} />
-              <PatternBoard limit={6} />
+              <PriorityRanking limit={10} onViewInGraph={navigateToGraph} />
+              <PatternBoard limit={6} onViewInGraph={navigateToGraph} />
             </div>
             <div className="grid-row">
               <ProgressTracker limit={10} />
@@ -53,11 +59,11 @@ function App() {
           </div>
         )
       case 'graph':
-        return <GraphView />
+        return <GraphView focusNodeId={graphFocusNode} onFocusComplete={() => setGraphFocusNode(null)} />
       case 'priorities':
-        return <PriorityRanking />
+        return <PriorityRanking onViewInGraph={navigateToGraph} />
       case 'patterns':
-        return <PatternBoard />
+        return <PatternBoard onViewInGraph={navigateToGraph} />
       case 'progress':
         return <ProgressTracker />
       case 'activity':

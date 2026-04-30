@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
-const PriorityRanking = ({ limit = 50 }) => {
+const PriorityRanking = ({ limit = 50, onViewInGraph = null }) => {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -201,6 +201,15 @@ const PriorityRanking = ({ limit = 50 }) => {
                       {item.implementation_complexity}
                     </div>
                   )}
+                  
+                  <button 
+                    className="view-in-graph-btn"
+                    onClick={() => onViewInGraph?.(item.id)}
+                    disabled={!onViewInGraph}
+                    title="View in Graph"
+                  >
+                    🔍
+                  </button>
                 </div>
               </div>
             ))

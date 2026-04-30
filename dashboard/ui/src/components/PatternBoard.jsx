@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
-const PatternBoard = ({ limit = 20 }) => {
+const PatternBoard = ({ limit = 20, onViewInGraph = null }) => {
   const [clusters, setClusters] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -171,6 +171,14 @@ const PatternBoard = ({ limit = 20 }) => {
                     </div>
                   </div>
                 )}
+                
+                <button 
+                  className="view-in-graph-btn"
+                  onClick={() => onViewInGraph?.(cluster.id)}
+                  disabled={!onViewInGraph}
+                >
+                  View in Graph →
+                </button>
               </div>
             ))
           )}

@@ -3,17 +3,34 @@ import CytoscapeComponent from 'react-cytoscapejs'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
-const GraphView = ({ limit = 1000 }) => {
+const GraphView = ({ limit = 1000, focusNodeId = null, onFocusComplete = null }) => {
   const [graphData, setGraphData] = useState({ nodes: [], edges: [] })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [selectedNode, setSelectedNode] = useState(null)
   const [nodeDetails, setNodeDetails] = useState(null)
+  const [cy, setCy] = useState(null)
   const cyRef = useRef(null)
 
   useEffect(() => {
     fetchGraphData()
   }, [limit])
+
+  useEffect(() => {
+    if (focusNodeId && cy) {
+      const node = cy.$(`#${focusNodeId}`)
+      if (node.length > 0) {
+        cy.animate({
+          center: { eles: node },
+          zoom: 2
+        }, { duration: 500 })
+        node.select()
+        fetchNodeDetails(focusNodeId)
+        setSelectedNode(focusNodeId)
+        onFocusComplete?.()
+      }
+    }
+  }, [focusNodeId, cy])
 
   const fetchGraphData = async () => {
     try {
@@ -179,9 +196,10 @@ const GraphView = ({ limit = 1000 }) => {
             style={{ width: '100%', height: '100%' }}
             layout={layout}
             stylesheet={stylesheet}
-            cy={(cy) => {
-              cyRef.current = cy
-              cy.on('tap', 'node', handleNodeClick)
+            cy={(cyInstance) => {
+              cyRef.current = cyInstance
+              setCy(cyInstance)
+              cyInstance.on('tap', 'node', handleNodeClick)
             }}
           />
         </div>
