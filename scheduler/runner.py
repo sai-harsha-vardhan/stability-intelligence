@@ -172,6 +172,19 @@ class SchedulerRunner:
                 count = incremental_sync()
                 logger.info(f"Incremental sync complete: {count} issues synced")
             
+            # Ingest cached issues into Neo4j (extracts assignees → ActionItem nodes)
+            try:
+                from scripts.neo4j_ingestion import run_ingestion
+                ingestion_counts = run_ingestion()
+                logger.info(
+                    f"Neo4j ingestion complete: "
+                    f"action_items={ingestion_counts['action_item']}, "
+                    f"incidents={ingestion_counts['incident']}, "
+                    f"rcas={ingestion_counts['rca']}"
+                )
+            except Exception as ingest_err:
+                logger.error(f"Neo4j ingestion failed (sync still counts as success): {ingest_err}")
+            
             return count
         except Exception as e:
             logger.error(f"GitHub sync failed: {e}")

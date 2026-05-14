@@ -60,8 +60,8 @@ class TestBaseAgent:
         
         agent = BaseAgent(name="test-agent")
         agent.log_activity(
-            action="processed_incident",
-            details={"incident_id": "INC-123"}
+            message="processed_incident",
+            data={"incident_id": "INC-123"}
         )
         
         # Should create ActivityEvent node

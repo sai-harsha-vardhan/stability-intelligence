@@ -108,11 +108,11 @@ class BaseAgent:
     
     def query_graph(self, cypher: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """Execute a read query against the graph."""
-        return query(cypher, parameters)
+        return self.graph_client.read(cypher, parameters)
     
     def write_graph(self, cypher: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """Execute a write query against the graph."""
-        return write(cypher, parameters)
+        return self.graph_client.write(cypher, parameters)
     
     def log_activity(
         self,

@@ -407,10 +407,10 @@ class TestActivityEndpoint:
 
 class TestChangeFeedEndpoint:
     """Test /change-feed endpoint (real-time changes)."""
-    
+
     @patch('dashboard.api.main.get_client')
-    def test_change_feed_returns_events(self, mock_get_client):
-        """Change feed endpoint should return recent changes."""
+    def test_change_feed_returns_activity_events(self, mock_get_client):
+        """Change feed returns ActivityEvent nodes when they exist."""
         mock_client = MagicMock()
         mock_client.read.return_value = [
             {
@@ -425,7 +425,7 @@ class TestChangeFeedEndpoint:
             }
         ]
         mock_get_client.return_value = mock_client
-        
+
         response = client.get("/change-feed")
         assert response.status_code == 200
         data = response.json()
@@ -433,9 +433,59 @@ class TestChangeFeedEndpoint:
         assert "count" in data
         assert "generated_at" in data
         event = data["events"][0]
-        assert "event_type" in event
-        assert "node_type" in event
-        assert "severity" in event
+        assert event["event_type"] == "ingestion"
+        assert event["node_type"] == "Incident"
+        assert event["severity"] == "P1"
+        assert event["title"] == "Payment failure"
+        # Verify the query uses datetime() casting — read called once (no fallback)
+        mock_client.read.assert_called_once()
+        cypher = mock_client.read.call_args[0][0]
+        assert "datetime($since)" in cypher
+
+    @patch('dashboard.api.main.get_client')
+    def test_change_feed_falls_back_to_graph_nodes(self, mock_get_client):
+        """When no ActivityEvents exist, change feed falls back to Incident/ActionItem/etc. nodes."""
+        mock_client = MagicMock()
+        # First call (ActivityEvent query) returns empty; second call (fallback) returns rows
+        mock_client.read.side_effect = [
+            [],  # ActivityEvent query — no results
+            [
+                {
+                    "id": "inc-456",
+                    "event_type": "incident_created",
+                    "node_type": "Incident",
+                    "title": "DB timeout",
+                    "severity": "critical",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ],
+        ]
+        mock_get_client.return_value = mock_client
+
+        response = client.get("/change-feed")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["count"] == 1
+        event = data["events"][0]
+        assert event["event_type"] == "incident_created"
+        assert event["node_type"] == "Incident"
+        assert event["severity"] == "critical"
+        # Fallback query should also use datetime() casting
+        fallback_cypher = mock_client.read.call_args[0][0]
+        assert "datetime($since)" in fallback_cypher
+
+    @patch('dashboard.api.main.get_client')
+    def test_change_feed_returns_empty_when_no_data(self, mock_get_client):
+        """Change feed returns empty list when neither ActivityEvents nor graph nodes exist."""
+        mock_client = MagicMock()
+        mock_client.read.side_effect = [[], []]
+        mock_get_client.return_value = mock_client
+
+        response = client.get("/change-feed")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["events"] == []
+        assert data["count"] == 0
 
 
 class TestStatsEndpoint:

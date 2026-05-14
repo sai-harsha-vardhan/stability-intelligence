@@ -94,8 +94,9 @@ class TestSchedulerRunner:
 class TestSchedulerRunnerJobs:
     """Test suite for individual job execution."""
 
+    @patch("scripts.neo4j_ingestion.run_ingestion", return_value={"action_item": 0, "incident": 0, "rca": 0, "skipped": 0})
     @patch("scripts.github_sync.bulk_sync")
-    def test_run_github_sync_bulk(self, mock_bulk_sync, mock_env_vars):
+    def test_run_github_sync_bulk(self, mock_bulk_sync, mock_run_ingestion, mock_env_vars):
         """Test bulk GitHub sync execution."""
         mock_bulk_sync.return_value = 100
         runner = SchedulerRunner()
@@ -105,8 +106,9 @@ class TestSchedulerRunnerJobs:
         assert result == 100
         mock_bulk_sync.assert_called_once()
 
+    @patch("scripts.neo4j_ingestion.run_ingestion", return_value={"action_item": 0, "incident": 0, "rca": 0, "skipped": 0})
     @patch("scripts.github_sync.incremental_sync")
-    def test_run_github_sync_incremental(self, mock_incremental, mock_env_vars):
+    def test_run_github_sync_incremental(self, mock_incremental, mock_run_ingestion, mock_env_vars):
         """Test incremental GitHub sync execution."""
         mock_incremental.return_value = 5
         runner = SchedulerRunner()
@@ -159,11 +161,11 @@ class TestSchedulerRunnerJobs:
 class TestHealthMonitor:
     """Test suite for HealthMonitor."""
 
-    def test_initialization(self):
+    def test_initialization(self, mock_env_vars):
         """Test health monitor initialization."""
         monitor = HealthMonitor()
-        assert monitor.neo4j_uri == "bolt://neo4j:7687"
-        assert monitor.litellm_url == "http://litellm:4000"
+        assert monitor.neo4j_uri == "bolt://localhost:7687"
+        assert monitor.litellm_url == "http://localhost:4000"
 
     def test_check_all_runs_all_checks(self):
         """Test that check_all runs all health checks."""
@@ -346,9 +348,10 @@ class TestSchedulerBootstrap:
         runner.run_github_sync = Mock(return_value=50)
         runner.run_tree_sitter_parse = Mock()
         
-        # Mock the cache check
+        # Mock the cache check and graph query
         with patch.object(Path, "exists", return_value=False):
-            runner.bootstrap()
+            with patch("graph.client.query", return_value=[{"count": 1}]):
+                runner.bootstrap()
         
         runner.run_github_sync.assert_called_once_with(bulk=True)
 
@@ -358,10 +361,11 @@ class TestSchedulerBootstrap:
         runner.run_github_sync = Mock()
         runner.run_tree_sitter_parse = Mock()
         
-        # Mock cache exists
+        # Mock cache exists and graph query
         with patch.object(Path, "glob", return_value=[Path("test.jsonl")]):
             with patch.object(Path, "exists", return_value=True):
-                runner.bootstrap()
+                with patch("graph.client.query", return_value=[{"count": 1}]):
+                    runner.bootstrap()
         
         runner.run_github_sync.assert_not_called()
 
@@ -372,5 +376,6 @@ class TestSchedulerBootstrap:
         runner.run_tree_sitter_parse = Mock()
         
         with patch.object(Path, "exists", return_value=False):
-            # Should not raise
-            runner.bootstrap()
+            with patch("graph.client.query", return_value=[{"count": 1}]):
+                # Should not raise
+                runner.bootstrap()
