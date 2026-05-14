@@ -1247,6 +1247,53 @@ def get_node_details(
 # Manual Trigger Endpoints
 # ============================================================================
 
+# In-memory cache of the most recent sync result so /sync-status can return
+# it without hitting the filesystem on every request.
+_last_sync_result: Dict[str, Any] = {}
+
+
+@app.get("/sync-status", tags=["manual-triggers"])
+def get_sync_status() -> Dict[str, Any]:
+    """
+    Return the result of the most recent /trigger-sync call.
+
+    On first load (no sync ever run this process) falls back to the persisted
+    sync state file so the UI can show the last-sync timestamp even after a
+    server restart.
+
+    Returns:
+        has_result: bool — whether a sync has been recorded
+        success: bool | None
+        timestamp: ISO-8601 string | None
+        duration_ms: int | None
+        summary: {issues_added, issues_updated, issues_skipped, total_processed} | None
+        errors: list of error strings (empty when success)
+        graph_stats: dict | None
+    """
+    if _last_sync_result:
+        return {
+            "has_result": True,
+            **_last_sync_result,
+        }
+
+    # Fallback: read persisted sync state for last_sync timestamp
+    try:
+        sync_state = load_sync_state()
+        last_sync = sync_state.get("last_sync")
+    except Exception:
+        last_sync = None
+
+    return {
+        "has_result": last_sync is not None,
+        "success": None,
+        "timestamp": last_sync,
+        "duration_ms": None,
+        "summary": None,
+        "errors": [],
+        "graph_stats": None,
+    }
+
+
 @app.post("/trigger-sync", tags=["manual-triggers"])
 def trigger_sync() -> Dict[str, Any]:
     """
@@ -1316,6 +1363,19 @@ def trigger_sync() -> Dict[str, Any]:
 
     duration_ms = int(time.time() * 1000) - start_ms
 
+    # Cache result so /sync-status can return it without filesystem access
+    result_payload: Dict[str, Any] = {
+        "success": len(errors) == 0,
+        "duration_ms": duration_ms,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "summary": summary,
+        "changes": changes,
+        "errors": errors,
+        "graph_stats": graph_stats,
+    }
+    global _last_sync_result
+    _last_sync_result = result_payload
+
     # Emit ActivityEvent nodes for each change so /change-feed reflects real
     # sync activity.  Best-effort: failures here must not fail the sync call.
     try:
@@ -1350,15 +1410,7 @@ def trigger_sync() -> Dict[str, Any]:
     except Exception:
         pass  # event logging is non-critical
 
-    return {
-        "success": len(errors) == 0,
-        "duration_ms": duration_ms,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "summary": summary,
-        "changes": changes,
-        "errors": errors,
-        "graph_stats": graph_stats,
-    }
+    return result_payload
 
 
 @app.get("/system-status", tags=["manual-triggers"])

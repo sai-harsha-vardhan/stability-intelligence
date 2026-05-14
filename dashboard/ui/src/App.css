@@ -1407,6 +1407,18 @@
   color: #86efac;
 }
 
+.sync-status-bar.error {
+  background: #450a0a;
+  border-bottom-color: #7f1d1d;
+  color: #fca5a5;
+}
+
+.sync-errors {
+  color: #fca5a5;
+  font-style: italic;
+  cursor: help;
+}
+
 .sync-spinner {
   display: inline-block;
   width: 0.85rem;

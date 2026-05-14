@@ -773,5 +773,68 @@ class TestSystemStatusEndpoint:
         assert data["node_counts"]["action_items"] == 20
 
 
+class TestSyncStatusEndpoint:
+    """Test GET /sync-status endpoint."""
+
+    def test_sync_status_no_prior_sync(self):
+        """GET /sync-status with no prior sync and empty cache returns has_result=False."""
+        import dashboard.api.main as main_module
+        original = main_module._last_sync_result.copy()
+        main_module._last_sync_result.clear()
+
+        with patch('dashboard.api.main.load_sync_state', return_value={"last_sync": None}):
+            response = client.get("/sync-status")
+
+        main_module._last_sync_result.update(original)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["has_result"] is False
+        assert data["errors"] == []
+        assert data["timestamp"] is None
+
+    def test_sync_status_with_persisted_timestamp(self):
+        """GET /sync-status falls back to persisted last_sync when cache is empty."""
+        import dashboard.api.main as main_module
+        original = main_module._last_sync_result.copy()
+        main_module._last_sync_result.clear()
+
+        with patch('dashboard.api.main.load_sync_state', return_value={"last_sync": "2026-05-14T10:00:00+00:00"}):
+            response = client.get("/sync-status")
+
+        main_module._last_sync_result.update(original)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["has_result"] is True
+        assert data["timestamp"] == "2026-05-14T10:00:00+00:00"
+
+    def test_sync_status_returns_cached_result(self):
+        """GET /sync-status returns the in-memory cache when a sync has been run."""
+        import dashboard.api.main as main_module
+        original = main_module._last_sync_result.copy()
+        main_module._last_sync_result.update({
+            "success": True,
+            "timestamp": "2026-05-14T11:00:00+00:00",
+            "duration_ms": 1234,
+            "summary": {"issues_added": 2, "issues_updated": 3, "issues_skipped": 0, "total_processed": 5},
+            "changes": [],
+            "errors": [],
+            "graph_stats": {},
+        })
+
+        response = client.get("/sync-status")
+
+        main_module._last_sync_result.clear()
+        main_module._last_sync_result.update(original)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["has_result"] is True
+        assert data["success"] is True
+        assert data["summary"]["issues_added"] == 2
+        assert data["errors"] == []
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
