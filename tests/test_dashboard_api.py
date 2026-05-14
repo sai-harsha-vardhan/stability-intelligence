@@ -685,5 +685,93 @@ class TestSystemHealthDetailedEndpoint:
         assert response.status_code == 503
 
 
+class TestTriggerSyncEndpoint:
+    """Test /trigger-sync endpoint."""
+
+    @patch('dashboard.api.main.incremental_sync')
+    @patch('dashboard.api.main.neo4j_write', create=True)
+    def test_trigger_sync_returns_detailed_response(self, mock_neo4j_write, mock_sync):
+        """POST /trigger-sync should return success, duration, summary, and changes."""
+        mock_sync.return_value = {
+            "summary": {"issues_added": 3, "issues_updated": 5, "issues_skipped": 10, "total_processed": 18},
+            "changes": [
+                {"action": "added", "title": "Fix login bug", "number": 101},
+                {"action": "updated", "title": "Improve search", "number": 102},
+            ],
+            "errors": [],
+        }
+
+        # Patch the dynamic import inside trigger_sync
+        mock_transform_mod = MagicMock()
+        mock_transform_mod.transform_issues_to_graph.return_value = {"nodes": 50}
+        with patch.dict('sys.modules', {'scripts.transform_issues_to_graph': mock_transform_mod}), \
+             patch('graph.client.write', return_value=None, create=True):
+            response = client.post("/trigger-sync")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert "duration_ms" in data
+        assert "timestamp" in data
+        assert data["summary"]["issues_added"] == 3
+        assert data["summary"]["issues_updated"] == 5
+        assert data["summary"]["issues_skipped"] == 10
+        assert len(data["changes"]) == 2
+        assert data["errors"] == []
+
+    @patch('dashboard.api.main.incremental_sync')
+    def test_trigger_sync_handles_sync_error(self, mock_sync):
+        """Sync errors should be captured in errors list, not raise HTTP 500."""
+        mock_sync.side_effect = Exception("GitHub API rate limited")
+
+        with patch('graph.client.write', return_value=None, create=True):
+            response = client.post("/trigger-sync")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is False
+        assert len(data["errors"]) > 0
+        assert "GitHub API rate limited" in data["errors"][0]
+
+    @patch('dashboard.api.main.incremental_sync')
+    def test_trigger_sync_legacy_list_format(self, mock_sync):
+        """Legacy incremental_sync returning a plain list should still work."""
+        mock_sync.return_value = [
+            {"title": "Old issue", "github_issue_number": 99},
+        ]
+
+        with patch('graph.client.write', return_value=None, create=True):
+            response = client.post("/trigger-sync")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["summary"]["issues_added"] == 1
+        assert data["summary"]["total_processed"] == 1
+
+
+class TestSystemStatusEndpoint:
+    """Test /system-status endpoint."""
+
+    @patch('dashboard.api.main.get_client')
+    @patch('dashboard.api.main.load_sync_state')
+    def test_system_status_returns_status(self, mock_load_sync, mock_get_client):
+        """GET /system-status should return node counts and last sync time."""
+        mock_client = MagicMock()
+        mock_client.read.return_value = [
+            {"incidents": 10, "actions": 20, "patterns": 5, "strategies": 3}
+        ]
+        mock_get_client.return_value = mock_client
+        mock_load_sync.return_value = {"last_sync": "2026-05-14T10:00:00+00:00"}
+
+        response = client.get("/system-status")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "healthy"
+        assert data["last_sync"] == "2026-05-14T10:00:00+00:00"
+        assert data["node_counts"]["incidents"] == 10
+        assert data["node_counts"]["action_items"] == 20
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
