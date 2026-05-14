@@ -222,15 +222,31 @@ def transform_issue(issue: Dict, comments: List[Dict], linked_issues: List[int])
 
 
 def infer_issue_type(labels: List[str]) -> str:
-    """Infer issue type from labels."""
-    if "incident-reported" in labels:
+    """Infer issue type from labels.
+
+    Handles both lowercase hyphenated labels (e.g. ``incident-reported``) and
+    the title-cased space-separated labels used in the juspay/hyperswitch-cloud
+    repo (e.g. ``Incident Reported``, ``RCA-Action``, ``RCA Discussed``).
+    Matching is case-insensitive so future capitalisation variants are covered.
+    """
+    normalised = {lbl.lower().replace(" ", "-").replace("_", "-") for lbl in labels}
+
+    # Incident labels
+    incident_keys = {"incident-reported", "incident-mitigated", "incident-completed"}
+    if normalised & incident_keys:
         return "incident"
-    elif "rca-discussed" in labels:
+
+    # RCA / post-mortem labels
+    rca_keys = {"rca-discussed", "rca-prepared"}
+    if normalised & rca_keys:
         return "rca"
-    elif "rca-action-item" in labels:
+
+    # Action-item labels
+    action_keys = {"rca-action-item", "rca-action"}
+    if normalised & action_keys:
         return "action_item"
-    else:
-        return "unknown"
+
+    return "unknown"
 
 
 def generate_mock_issues() -> List[Dict]:
