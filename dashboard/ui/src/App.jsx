@@ -15,9 +15,18 @@ function App() {
   const [systemStats, setSystemStats] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [syncing, setSyncing] = useState(false)
+  const [syncStatus, setSyncStatus] = useState('')
+  const [syncSummary, setSyncSummary] = useState(null)
+  const [lastSyncTime, setLastSyncTime] = useState(null)
 
   useEffect(() => {
     fetchStats()
+    // Load last sync time from system-status on mount
+    fetch(`${API_BASE_URL}/system-status`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data?.last_sync) setLastSyncTime(data.last_sync) })
+      .catch(() => {})
   }, [])
 
   const fetchStats = async () => {
@@ -31,6 +40,44 @@ function App() {
       setError(err.message)
       setLoading(false)
     }
+  }
+
+  const handleSync = async () => {
+    setSyncing(true)
+    setSyncStatus('Syncing from GitHub...')
+    setSyncSummary(null)
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/trigger-sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      const data = await response.json()
+
+      if (data.success) {
+        const s = data.summary
+        setSyncStatus(`Sync complete in ${data.duration_ms}ms`)
+        setSyncSummary(data.summary)
+        setLastSyncTime(data.timestamp)
+        await fetchStats()
+      } else {
+        setSyncStatus(`Sync finished with ${data.errors.length} error(s)`)
+        setSyncSummary(data.summary)
+        setLastSyncTime(data.timestamp)
+      }
+    } catch (err) {
+      setSyncStatus(`Sync failed: ${err.message}`)
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  const formatRelativeTime = (isoString) => {
+    if (!isoString) return null
+    const diff = Math.floor((Date.now() - new Date(isoString).getTime()) / 1000)
+    if (diff < 60) return `${diff}s ago`
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+    return `${Math.floor(diff / 3600)}h ago`
   }
 
   const renderTabContent = () => {
@@ -112,7 +159,40 @@ function App() {
             <span className="stat-label">Strategies</span>
           </div>
         </div>
+
+        <div className="sync-controls">
+          {lastSyncTime && (
+            <span className="last-sync-time" title={lastSyncTime}>
+              Last sync: {formatRelativeTime(lastSyncTime)}
+            </span>
+          )}
+          <button
+            className={`sync-btn${syncing ? ' syncing' : ''}`}
+            onClick={handleSync}
+            disabled={syncing}
+          >
+            {syncing ? 'Syncing...' : 'Sync GitHub'}
+          </button>
+        </div>
       </header>
+
+      {(syncStatus || syncSummary) && (
+        <div className={`sync-status-bar${syncSummary && !syncing ? ' done' : ''}`}>
+          {syncing && <span className="sync-spinner" />}
+          <span className="sync-status-text">{syncStatus}</span>
+          {syncSummary && !syncing && (
+            <span className="sync-summary">
+              &nbsp;| +{syncSummary.issues_added} added &nbsp;
+              ~{syncSummary.issues_updated} updated &nbsp;
+              {syncSummary.issues_skipped > 0 ? `${syncSummary.issues_skipped} skipped` : ''}
+              &nbsp;({syncSummary.total_processed} total)
+            </span>
+          )}
+          {!syncing && (
+            <button className="sync-dismiss" onClick={() => { setSyncStatus(''); setSyncSummary(null) }}>×</button>
+          )}
+        </div>
+      )}
 
       <nav className="app-nav">
         {[
