@@ -654,7 +654,8 @@ def main():
         print(f"\nSync complete. Total issues: {len(issues)}")
         
     elif command == "incremental":
-        issues = incremental_sync(token)
+        result = incremental_sync(token)
+        issues = result.get("issues", [])
         print(f"\nIncremental sync complete. New/updated issues: {len(issues)}")
         
     elif command == "load":
