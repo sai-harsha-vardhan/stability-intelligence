@@ -476,6 +476,14 @@ def get_patterns(
         query = get_query("get_pattern_clusters")
         clusters_result = client.read(query)
         
+        # If all clusters have empty affected_components, trigger a backfill from incident data
+        all_empty = all(not (pc.get("affected_components") or []) for pc in clusters_result)
+        if all_empty and clusters_result:
+            backfill_query = get_query("backfill_pattern_cluster_components")
+            client.write(backfill_query)
+            # Re-fetch after backfill
+            clusters_result = client.read(query)
+        
         clusters = []
         for pc in clusters_result:
             # Apply filters
