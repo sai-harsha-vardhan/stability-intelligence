@@ -308,6 +308,67 @@ class TestProgressEndpoint:
         # Should only return open items
         assert all(item["status"] == "open" for item in data["items"])
 
+    @patch('dashboard.api.main.get_client')
+    def test_progress_normalizes_done_closed_completed_to_resolved(self, mock_get_client):
+        """Progress endpoint should normalize done/closed/completed status to resolved."""
+        mock_client = MagicMock()
+        mock_client.read.return_value = [
+            {"id": "ai-1", "status": "done", "title": "T1", "assignee": "",
+             "priority_score": 0.0, "implementation_complexity": "low",
+             "created_at": None, "resolved_at": None, "effective": None,
+             "pattern_cluster_name": None},
+            {"id": "ai-2", "status": "closed", "title": "T2", "assignee": "",
+             "priority_score": 0.0, "implementation_complexity": "low",
+             "created_at": None, "resolved_at": None, "effective": None,
+             "pattern_cluster_name": None},
+            {"id": "ai-3", "status": "completed", "title": "T3", "assignee": "",
+             "priority_score": 0.0, "implementation_complexity": "low",
+             "created_at": None, "resolved_at": None, "effective": None,
+             "pattern_cluster_name": None},
+        ]
+        mock_get_client.return_value = mock_client
+
+        response = client.get("/progress")
+        assert response.status_code == 200
+        data = response.json()
+        # All three should be normalized to resolved
+        assert data["stats"]["resolved"] == 3
+        assert data["stats"]["total"] == 3
+        assert all(item["status"] == "resolved" for item in data["items"])
+
+    @patch('dashboard.api.main.get_client')
+    def test_stats_normalizes_done_closed_completed_in_resolved_count(self, mock_get_client):
+        """Stats endpoint should count done/closed/completed as resolved."""
+        mock_client = MagicMock()
+
+        def mock_read(query, *args, **kwargs):
+            # Return counts query result
+            if "UNION ALL" in query:
+                return [{"count": 5}, {"count": 10}, {"count": 3}, {"count": 2}]
+            # Action item status breakdown
+            if "ai.status" in query and "ActionItem" in query:
+                return [
+                    {"status": "open", "count": 4},
+                    {"status": "resolved", "count": 2},
+                    {"status": "done", "count": 3},
+                    {"status": "closed", "count": 1},
+                    {"status": "completed", "count": 2},
+                ]
+            if "s.status" in query:
+                return [{"status": "proposed", "count": 1}]
+            if "pc.trend" in query:
+                return []
+            return []
+
+        mock_client.read.side_effect = mock_read
+        mock_get_client.return_value = mock_client
+
+        response = client.get("/stats")
+        assert response.status_code == 200
+        data = response.json()
+        # resolved = 2 + 3 + 1 + 2 = 8
+        assert data["stats"]["resolved_action_items"] == 8
+
 
 class TestActivityEndpoint:
     """Test /activity endpoint (agent activity)."""

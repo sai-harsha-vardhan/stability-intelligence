@@ -474,10 +474,12 @@ def get_progress(
     client = _get_neo4j_client()
     
     try:
-        # Get all action items with details
+        # Get all action items with details — use collect() to deduplicate rows
+        # from multiple BLOCKS_PATTERN edges per ActionItem
         query = """
         MATCH (ai:ActionItem)
         OPTIONAL MATCH (ai)-[:BLOCKS_PATTERN]->(pc:PatternCluster)
+        WITH ai, collect(pc.name)[0] AS pattern_cluster_name
         RETURN ai.id AS id,
                ai.title AS title,
                ai.status AS status,
@@ -487,17 +489,23 @@ def get_progress(
                ai.created_at AS created_at,
                ai.resolved_at AS resolved_at,
                ai.effective AS effective,
-               pc.name AS pattern_cluster_name
+               pattern_cluster_name
         ORDER BY ai.priority_score DESC
         """
         
         action_items = client.read(query)
         
+        # Normalize status: treat done/closed/completed as resolved
+        def _normalize_status(raw_status: str) -> str:
+            if raw_status in ("done", "closed", "completed"):
+                return "resolved"
+            return raw_status
+        
         items = []
         stats = {"total": 0, "open": 0, "in_progress": 0, "resolved": 0, "deferred": 0, "effective_count": 0, "ineffective_count": 0}
         
         for ai in action_items:
-            status = ai.get("status", "open")
+            status = _normalize_status(ai.get("status", "open"))
             effective = ai.get("effective")
             
             # Update stats
@@ -781,7 +789,11 @@ def get_stats() -> Dict[str, Any]:
         """)
         
         open_action_items = sum(r["count"] for r in action_item_status if r["status"] == "open")
-        resolved_action_items = sum(r["count"] for r in action_item_status if r["status"] == "resolved")
+        # Normalize: count done/closed/completed as resolved
+        resolved_action_items = sum(
+            r["count"] for r in action_item_status
+            if r["status"] in ("resolved", "done", "closed", "completed")
+        )
         
         strategy_status = client.read("""
             MATCH (s:Strategy)
