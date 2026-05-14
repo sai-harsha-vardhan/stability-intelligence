@@ -2,7 +2,7 @@
 import os
 import uuid
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 import httpx
 
@@ -24,12 +24,32 @@ class BaseAgent:
         self.litellm_url = litellm_url or os.getenv("LITELLM_BASE_URL", "http://litellm:4000")
         self.litellm_api_key = litellm_api_key or os.getenv("LITELLM_API_KEY", "")
         self.graph_client = get_client()
+        # Last Langfuse trace ID from the most recent LLM call (set by call_claude/call_kimi)
+        self.last_langfuse_trace_id: Optional[str] = None
     
     @property
     def neo4j_client(self):
         """Alias for graph_client for backward compatibility."""
         return self.graph_client
     
+    def _extract_langfuse_trace_id(self, response: httpx.Response) -> Optional[str]:
+        """Extract Langfuse trace ID from a LiteLLM response.
+        
+        LiteLLM sets the call ID in the response header 'x-litellm-call-id' and
+        in the response body 'id' field. When Langfuse callback is active, LiteLLM
+        uses this ID as the Langfuse trace ID.
+        """
+        # Prefer the explicit header LiteLLM sets for the call ID
+        trace_id = response.headers.get("x-litellm-call-id")
+        if trace_id:
+            return trace_id
+        # Fall back to the response body 'id' (OpenAI-compatible call ID)
+        try:
+            data = response.json()
+            return data.get("id")
+        except Exception:
+            return None
+
     def call_claude(
         self,
         prompt: str,
@@ -37,7 +57,12 @@ class BaseAgent:
         trace_name: Optional[str] = None,
         max_tokens: int = 4000,
     ) -> str:
-        """Call Claude model via LiteLLM with Langfuse tracing."""
+        """Call Claude model via LiteLLM with Langfuse tracing.
+        
+        After this call, self.last_langfuse_trace_id is set to the Langfuse
+        trace ID for the request (if available), suitable for passing to
+        log_activity(linked_node_id=..., linked_node_type='langfuse_trace').
+        """
         model = os.getenv("LITELLM_CLAUDE_MODEL", "claude-critical")
         
         messages = []
@@ -64,6 +89,10 @@ class BaseAgent:
             )
             response.raise_for_status()
             
+            self.last_langfuse_trace_id = self._extract_langfuse_trace_id(response)
+            if self.last_langfuse_trace_id:
+                logger.debug(f"Langfuse trace ID: {self.last_langfuse_trace_id}")
+            
             data = response.json()
             return data["choices"][0]["message"]["content"]
         except Exception as e:
@@ -76,7 +105,11 @@ class BaseAgent:
         system: Optional[str] = None,
         max_tokens: int = 4000,
     ) -> str:
-        """Call Kimi model via LiteLLM."""
+        """Call Kimi model via LiteLLM.
+        
+        After this call, self.last_langfuse_trace_id is set to the Langfuse
+        trace ID for the request (if available).
+        """
         model = os.getenv("LITELLM_KIMI_MODEL", "kimi-default")
         
         messages = []
@@ -100,6 +133,10 @@ class BaseAgent:
             )
             response.raise_for_status()
             
+            self.last_langfuse_trace_id = self._extract_langfuse_trace_id(response)
+            if self.last_langfuse_trace_id:
+                logger.debug(f"Langfuse trace ID: {self.last_langfuse_trace_id}")
+            
             data = response.json()
             return data["choices"][0]["message"]["content"]
         except Exception as e:
@@ -121,7 +158,17 @@ class BaseAgent:
         linked_node_id: Optional[str] = None,
         linked_node_type: Optional[str] = None,
     ):
-        """Log an activity event to the graph."""
+        """Log an activity event to the graph.
+        
+        If linked_node_id is not provided but self.last_langfuse_trace_id is set
+        (from a preceding call_claude/call_kimi call), the activity is automatically
+        linked to that Langfuse trace with linked_node_type='langfuse_trace'.
+        """
+        # Auto-link to the most recent Langfuse trace if no explicit link given
+        if linked_node_id is None and self.last_langfuse_trace_id:
+            linked_node_id = self.last_langfuse_trace_id
+            linked_node_type = "langfuse_trace"
+
         event_id = f"evt-{uuid.uuid4().hex[:12]}"
         
         cypher = """

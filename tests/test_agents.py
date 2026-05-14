@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agents.base import BaseAgent
+from agents.rca_pattern_agent import RcaPatternAgent
 
 
 class TestBaseAgent:
@@ -53,21 +54,102 @@ class TestBaseAgent:
         assert call_args[0][1]["id"] == "test-123"
     
     @patch('agents.base.get_client')
-    def test_log_activity(self, mock_get_client):
+    @patch('agents.base.write')
+    def test_log_activity(self, mock_write, mock_get_client):
         """Test log_activity method."""
-        mock_client = MagicMock()
-        mock_get_client.return_value = mock_client
+        mock_get_client.return_value = MagicMock()
+        mock_write.return_value = []
         
         agent = BaseAgent(name="test-agent")
         agent.log_activity(
-            action="processed_incident",
-            details={"incident_id": "INC-123"}
+            message="processed_incident",
+            data={"incident_id": "INC-123"}
         )
         
-        # Should create ActivityEvent node
-        mock_client.write.assert_called()
-        call_args = mock_client.write.call_args
+        # Should call write with an ActivityEvent cypher
+        mock_write.assert_called_once()
+        call_args = mock_write.call_args
         assert "ActivityEvent" in call_args[0][0]
+
+    @patch('agents.base.get_client')
+    def test_call_claude_captures_langfuse_trace_id_from_header(self, mock_get_client):
+        """Test that call_claude captures Langfuse trace ID from x-litellm-call-id header."""
+        mock_get_client.return_value = MagicMock()
+        
+        mock_response = MagicMock()
+        mock_response.headers = {"x-litellm-call-id": "trace-abc123"}
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "test response"}}],
+            "id": "chatcmpl-fallback",
+        }
+        mock_response.raise_for_status = MagicMock()
+        
+        agent = BaseAgent(name="test-agent")
+        assert agent.last_langfuse_trace_id is None
+        
+        with patch('agents.base.httpx.post', return_value=mock_response):
+            result = agent.call_claude(prompt="Hello")
+        
+        assert result == "test response"
+        assert agent.last_langfuse_trace_id == "trace-abc123"
+
+    @patch('agents.base.get_client')
+    def test_call_claude_falls_back_to_response_id_for_trace(self, mock_get_client):
+        """Test that call_claude falls back to response body 'id' when header missing."""
+        mock_get_client.return_value = MagicMock()
+        
+        mock_response = MagicMock()
+        mock_response.headers = {}
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "test response"}}],
+            "id": "chatcmpl-body-id",
+        }
+        mock_response.raise_for_status = MagicMock()
+        
+        agent = BaseAgent(name="test-agent")
+        
+        with patch('agents.base.httpx.post', return_value=mock_response):
+            agent.call_claude(prompt="Hello")
+        
+        assert agent.last_langfuse_trace_id == "chatcmpl-body-id"
+
+    @patch('agents.base.get_client')
+    @patch('agents.base.write')
+    def test_log_activity_auto_links_langfuse_trace(self, mock_write, mock_get_client):
+        """Test that log_activity auto-links last_langfuse_trace_id when no explicit link given."""
+        mock_get_client.return_value = MagicMock()
+        mock_write.return_value = []
+        
+        agent = BaseAgent(name="test-agent")
+        agent.last_langfuse_trace_id = "trace-xyz789"
+        
+        agent.log_activity(message="LLM call complete")
+        
+        call_args = mock_write.call_args
+        params = call_args[0][1]
+        assert params["linked_node_id"] == "trace-xyz789"
+        assert params["linked_node_type"] == "langfuse_trace"
+
+    @patch('agents.base.get_client')
+    @patch('agents.base.write')
+    def test_log_activity_explicit_link_overrides_langfuse_trace(self, mock_write, mock_get_client):
+        """Test that an explicit linked_node_id takes precedence over last_langfuse_trace_id."""
+        mock_get_client.return_value = MagicMock()
+        mock_write.return_value = []
+        
+        agent = BaseAgent(name="test-agent")
+        agent.last_langfuse_trace_id = "trace-xyz789"
+        
+        agent.log_activity(
+            message="incident processed",
+            linked_node_id="inc-123",
+            linked_node_type="Incident",
+        )
+        
+        call_args = mock_write.call_args
+        params = call_args[0][1]
+        assert params["linked_node_id"] == "inc-123"
+        assert params["linked_node_type"] == "Incident"
 
 
 class TestIngestionAgent:
@@ -248,3 +330,93 @@ class TestAgentIntegration:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestRcaPatternAgent:
+    """Tests for RcaPatternAgent."""
+
+    @patch('agents.base.get_client')
+    def test_init(self, mock_get_client):
+        """RcaPatternAgent initialises with correct name."""
+        agent = RcaPatternAgent()
+        assert agent.name == "rca_pattern_agent"
+
+    @patch('agents.base.get_client')
+    def test_link_components_creates_relationships(self, mock_get_client):
+        """_link_components_to_cluster should create Component nodes and AFFECTS edges."""
+        mock_client = MagicMock()
+        mock_client.write.return_value = [{"component_name": "payment-service"}]
+        mock_get_client.return_value = mock_client
+
+        agent = RcaPatternAgent()
+        agent.graph_client = mock_client
+
+        # Patch write_graph to track calls
+        written_queries = []
+        def fake_write(cypher, params=None):
+            written_queries.append((cypher, params))
+            return [{"component_name": params.get("component_name") if params else "x"}]
+
+        agent.write_graph = fake_write
+
+        cluster = {
+            "id": "pc-test",
+            "name": "Test Cluster",
+            "flows_per_incident": [["payment-service", "checkout-flow"], ["payment-service"]],
+        }
+        result = agent._link_components_to_cluster(cluster)
+
+        # Should link 2 unique components
+        assert result == 2
+        # Should have written MERGE queries for each component + 1 property update
+        assert len(written_queries) == 3  # 2 MERGE + 1 SET
+
+    @patch('agents.base.get_client')
+    def test_link_components_no_flows(self, mock_get_client):
+        """_link_components_to_cluster returns 0 when no flows present."""
+        mock_get_client.return_value = MagicMock()
+        agent = RcaPatternAgent()
+
+        cluster = {"id": "pc-empty", "name": "Empty", "flows_per_incident": []}
+        result = agent._link_components_to_cluster(cluster)
+        assert result == 0
+
+    @patch('agents.base.get_client')
+    def test_run_calls_log_activity(self, mock_get_client):
+        """RcaPatternAgent.run() should log activity after processing."""
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+
+        agent = RcaPatternAgent()
+
+        # Simulate no clusters returned (empty graph)
+        agent.query_graph = MagicMock(return_value=[])
+        agent.log_activity = MagicMock()
+
+        agent.run()
+
+        agent.log_activity.assert_called_once()
+        call_kwargs = agent.log_activity.call_args
+        assert "complete" in call_kwargs[1]["message"] or "complete" in call_kwargs[0][0]
+
+    @patch('agents.base.get_client')
+    def test_run_processes_clusters(self, mock_get_client):
+        """RcaPatternAgent.run() processes each cluster and links components."""
+        mock_get_client.return_value = MagicMock()
+        agent = RcaPatternAgent()
+
+        clusters = [
+            {
+                "id": "pc-1",
+                "name": "Cluster 1",
+                "flows_per_incident": [["payments", "fraud-check"]],
+            }
+        ]
+        agent.query_graph = MagicMock(return_value=clusters)
+        agent._link_components_to_cluster = MagicMock(return_value=2)
+        agent.log_activity = MagicMock()
+
+        agent.run()
+
+        agent._link_components_to_cluster.assert_called_once_with(clusters[0])
+        agent.log_activity.assert_called_once()
