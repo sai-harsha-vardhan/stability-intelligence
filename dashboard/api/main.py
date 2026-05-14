@@ -544,6 +544,7 @@ def get_progress(
         # Canonical resolved statuses — normalize done/closed/completed → resolved
         RESOLVED_STATUSES = {"resolved", "done", "closed", "completed"}
 
+
         items = []
         stats = {"total": 0, "open": 0, "in_progress": 0, "resolved": 0, "deferred": 0, "effective_count": 0, "ineffective_count": 0}
         
