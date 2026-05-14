@@ -605,18 +605,26 @@ def get_change_feed(
 ) -> Dict[str, Any]:
     """
     Get real-time change feed.
-    
+
     Returns recent activity events including issue updates, pattern detections,
     and strategy generations within the specified time window.
+
+    Queries ActivityEvent nodes first (written by agents via log_activity).
+    Falls back to recent Incident/ActionItem/PatternCluster/Strategy node
+    creations when no ActivityEvent nodes exist yet.
     """
     client = _get_neo4j_client()
-    
+
     try:
         since = datetime.now(timezone.utc) - timedelta(hours=since_hours)
-        
-        query_str = """
+        since_iso = since.isoformat()
+
+        # Primary: query ActivityEvent nodes.
+        # Use datetime($since) so Neo4j compares its native datetime type
+        # against the ISO-8601 string we pass as a parameter.
+        activity_query = """
         MATCH (ae:ActivityEvent)
-        WHERE ae.created_at >= $since
+        WHERE ae.created_at >= datetime($since)
         RETURN ae.id AS id,
                ae.event_type AS event_type,
                ae.agent_name AS agent_name,
@@ -628,28 +636,94 @@ def get_change_feed(
         ORDER BY ae.created_at DESC
         LIMIT $limit
         """
-        
-        events_result = client.read(query_str, {"since": since.isoformat(), "limit": limit})
-        
+        events_result = client.read(activity_query, {"since": since_iso, "limit": limit})
+
         events = []
         for ae in events_result:
-            # Map event types to change descriptions
-            event_type = ae.get("event_type", "")
+            event_type = ae.get("event_type", "agent_run")
             message = ae.get("message", "")
-            details = ae.get("details", {})
-            node_type = ae.get("linked_node_type", "ActivityEvent")
-            
+            details = ae.get("details") or {}
+            if isinstance(details, str):
+                import json as _json
+                try:
+                    details = _json.loads(details)
+                except Exception:
+                    details = {}
+            node_type = ae.get("linked_node_type") or "ActivityEvent"
+
             events.append({
                 "id": ae.get("id"),
                 "event_type": event_type,
                 "node_type": node_type,
-                "node_id": ae.get("linked_node_id", ae.get("id")),
-                "title": details.get("title", message[:50]),
+                "node_id": ae.get("linked_node_id") or ae.get("id"),
+                "title": details.get("title") or message[:80] or "Agent activity",
                 "change_description": message,
                 "severity": details.get("severity"),
                 "created_at": _convert_datetime(ae.get("created_at")),
             })
-        
+
+        # Fallback: if no ActivityEvents exist, surface recent graph node
+        # creations (Incidents, ActionItems, PatternClusters, Strategies) so
+        # the UI always shows real system activity instead of an empty state.
+        if not events:
+            fallback_query = """
+            CALL {
+                MATCH (n:Incident)
+                WHERE n.created_at >= datetime($since)
+                RETURN n.id AS id,
+                       'incident_created' AS event_type,
+                       'Incident' AS node_type,
+                       coalesce(n.title, n.id) AS title,
+                       coalesce(n.severity, '') AS severity,
+                       n.created_at AS created_at
+                UNION ALL
+                MATCH (n:ActionItem)
+                WHERE n.created_at >= datetime($since)
+                RETURN n.id AS id,
+                       'action_item_created' AS event_type,
+                       'ActionItem' AS node_type,
+                       coalesce(n.title, n.id) AS title,
+                       '' AS severity,
+                       n.created_at AS created_at
+                UNION ALL
+                MATCH (n:PatternCluster)
+                WHERE n.created_at >= datetime($since)
+                RETURN n.id AS id,
+                       'pattern_detected' AS event_type,
+                       'PatternCluster' AS node_type,
+                       coalesce(n.name, n.id) AS title,
+                       '' AS severity,
+                       n.created_at AS created_at
+                UNION ALL
+                MATCH (n:Strategy)
+                WHERE n.created_at >= datetime($since)
+                RETURN n.id AS id,
+                       'strategy_created' AS event_type,
+                       'Strategy' AS node_type,
+                       coalesce(n.title, n.id) AS title,
+                       '' AS severity,
+                       n.created_at AS created_at
+            }
+            RETURN id, event_type, node_type, title, severity, created_at
+            ORDER BY created_at DESC
+            LIMIT $limit
+            """
+            fallback_result = client.read(fallback_query, {"since": since_iso, "limit": limit})
+            for row in fallback_result:
+                node_type = row.get("node_type", "Unknown")
+                event_type = row.get("event_type", "node_created")
+                title = row.get("title") or row.get("id") or "Unknown"
+                events.append({
+                    "id": row.get("id"),
+                    "event_type": event_type,
+                    "node_type": node_type,
+                    "node_id": row.get("id"),
+                    "title": title,
+                    "change_description": f"{node_type} created: {title}",
+                    "severity": row.get("severity") or None,
+                    "created_at": _convert_datetime(row.get("created_at")),
+                })
+
         return {
             "events": events,
             "count": len(events),
