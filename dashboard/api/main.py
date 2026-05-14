@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 from graph.client import get_client, query as neo4j_query
 from graph.queries import get_query
 from agents.base import BaseAgent
+from scripts.github_sync import incremental_sync, load_sync_state
 
 
 # ============================================================================
@@ -207,6 +208,56 @@ class StatsResponse(BaseModel):
     generated_at: str
 
 
+class LLMCallsByProvider(BaseModel):
+    """LLM calls aggregated by provider within a time window."""
+    provider: str
+    calls_per_hour: float
+    total_calls: int
+
+
+class GraphWriteStats(BaseModel):
+    """Graph write statistics."""
+    writes_per_hour: float
+    total_writes: int
+    last_write_at: Optional[str] = None
+
+
+class AgentRunDuration(BaseModel):
+    """Agent run duration statistics."""
+    agent_name: str
+    avg_duration_seconds: float
+    min_duration_seconds: float
+    max_duration_seconds: float
+    run_count: int
+
+
+class SystemHealthDetailedResponse(BaseModel):
+    """Detailed system health metrics response."""
+    status: str
+    timestamp: str
+    llm_calls_per_hour: List[LLMCallsByProvider]
+    graph_writes: GraphWriteStats
+    agent_run_durations: List[AgentRunDuration]
+    total_llm_calls_per_hour: float
+    generated_at: str
+
+
+class LLMUsageStats(BaseModel):
+    """LLM token usage statistics."""
+    total_llm_calls: int
+    total_tokens: int
+    total_prompt_tokens: int
+    total_completion_tokens: int
+    by_model: List[Dict[str, Any]]
+    by_agent: List[Dict[str, Any]]
+
+
+class LLMUsageResponse(BaseModel):
+    """LLM usage response."""
+    usage: LLMUsageStats
+    generated_at: str
+
+
 class NodeDetailsResponse(BaseModel):
     """Detailed node information."""
     id: str
@@ -254,13 +305,24 @@ def _get_neo4j_client():
 
 
 def _convert_datetime(dt: Any) -> Optional[str]:
-    """Convert datetime to ISO string."""
+    """Convert datetime-like value to an ISO-8601 string.
+
+    Handles:
+    - Python ``datetime`` objects
+    - Plain strings (passed through unchanged)
+    - Neo4j ``DateTime`` objects and any other type that exposes ``isoformat()``
+    - Anything else (converted via ``str()``)
+    """
     if dt is None:
         return None
     if isinstance(dt, datetime):
         return dt.isoformat()
     if isinstance(dt, str):
         return dt
+    # Neo4j DateTime (and similar) objects expose isoformat() but are not
+    # instances of datetime.datetime — call it explicitly.
+    if callable(getattr(dt, "isoformat", None)):
+        return dt.isoformat()
     return str(dt)
 
 
@@ -285,6 +347,8 @@ def root() -> Dict[str, Any]:
             "/health",
             "/stats",
             "/nodes/{node_id}",
+            "/trigger-sync",
+            "/system-status",
         ],
     }
 
@@ -475,9 +539,12 @@ def get_progress(
     
     try:
         # Get all action items with details
+        # Use WITH+collect to avoid duplicate rows from multiple BLOCKS_PATTERN edges
         query = """
         MATCH (ai:ActionItem)
         OPTIONAL MATCH (ai)-[:BLOCKS_PATTERN]->(pc:PatternCluster)
+        WITH ai,
+             collect(pc.name)[0] AS pattern_cluster_name
         RETURN ai.id AS id,
                ai.title AS title,
                ai.status AS status,
@@ -487,17 +554,22 @@ def get_progress(
                ai.created_at AS created_at,
                ai.resolved_at AS resolved_at,
                ai.effective AS effective,
-               pc.name AS pattern_cluster_name
+               pattern_cluster_name
         ORDER BY ai.priority_score DESC
         """
         
         action_items = client.read(query)
         
+        # Canonical resolved statuses — normalize done/closed/completed → resolved
+        RESOLVED_STATUSES = {"resolved", "done", "closed", "completed"}
+
         items = []
         stats = {"total": 0, "open": 0, "in_progress": 0, "resolved": 0, "deferred": 0, "effective_count": 0, "ineffective_count": 0}
         
         for ai in action_items:
-            status = ai.get("status", "open")
+            raw_status = ai.get("status", "open")
+            # Normalize to canonical status for consistent counting
+            status = "resolved" if raw_status in RESOLVED_STATUSES else raw_status
             effective = ai.get("effective")
             
             # Update stats
@@ -515,17 +587,17 @@ def get_progress(
             elif status == "deferred":
                 stats["deferred"] += 1
             
-            # Apply filter
+            # Apply filter (support both "done" and "resolved" as filter values for resolved items)
             if status_filter != "all":
-                if status_filter == "done" and status not in ["resolved", "closed"]:
+                if status_filter in ("done", "resolved") and status != "resolved":
                     continue
-                elif status_filter != "done" and status != status_filter:
+                elif status_filter not in ("done", "resolved") and status != status_filter:
                     continue
             
             items.append({
                 "id": ai.get("id"),
                 "title": ai.get("title", ""),
-                "status": status,
+                "status": status,  # normalized status
                 "assignee": ai.get("assignee", ""),
                 "priority_score": ai.get("priority_score", 0.0),
                 "implementation_complexity": ai.get("implementation_complexity", "medium"),
@@ -597,18 +669,26 @@ def get_change_feed(
 ) -> Dict[str, Any]:
     """
     Get real-time change feed.
-    
+
     Returns recent activity events including issue updates, pattern detections,
     and strategy generations within the specified time window.
+
+    Queries ActivityEvent nodes first (written by agents via log_activity).
+    Falls back to recent Incident/ActionItem/PatternCluster/Strategy node
+    creations when no ActivityEvent nodes exist yet.
     """
     client = _get_neo4j_client()
-    
+
     try:
         since = datetime.now(timezone.utc) - timedelta(hours=since_hours)
-        
-        query_str = """
+        since_iso = since.isoformat()
+
+        # Primary: query ActivityEvent nodes.
+        # Use datetime($since) so Neo4j compares its native datetime type
+        # against the ISO-8601 string we pass as a parameter.
+        activity_query = """
         MATCH (ae:ActivityEvent)
-        WHERE ae.created_at >= $since
+        WHERE ae.created_at >= datetime($since)
         RETURN ae.id AS id,
                ae.event_type AS event_type,
                ae.agent_name AS agent_name,
@@ -620,28 +700,94 @@ def get_change_feed(
         ORDER BY ae.created_at DESC
         LIMIT $limit
         """
-        
-        events_result = client.read(query_str, {"since": since.isoformat(), "limit": limit})
-        
+        events_result = client.read(activity_query, {"since": since_iso, "limit": limit})
+
         events = []
         for ae in events_result:
-            # Map event types to change descriptions
-            event_type = ae.get("event_type", "")
+            event_type = ae.get("event_type", "agent_run")
             message = ae.get("message", "")
-            details = ae.get("details", {})
-            node_type = ae.get("linked_node_type", "ActivityEvent")
-            
+            details = ae.get("details") or {}
+            if isinstance(details, str):
+                import json as _json
+                try:
+                    details = _json.loads(details)
+                except Exception:
+                    details = {}
+            node_type = ae.get("linked_node_type") or "ActivityEvent"
+
             events.append({
                 "id": ae.get("id"),
                 "event_type": event_type,
                 "node_type": node_type,
-                "node_id": ae.get("linked_node_id", ae.get("id")),
-                "title": details.get("title", message[:50]),
+                "node_id": ae.get("linked_node_id") or ae.get("id"),
+                "title": details.get("title") or message[:80] or "Agent activity",
                 "change_description": message,
                 "severity": details.get("severity"),
                 "created_at": _convert_datetime(ae.get("created_at")),
             })
-        
+
+        # Fallback: if no ActivityEvents exist, surface recent graph node
+        # creations (Incidents, ActionItems, PatternClusters, Strategies) so
+        # the UI always shows real system activity instead of empty state.
+        if not events:
+            fallback_query = """
+            CALL {
+                MATCH (n:Incident)
+                WHERE n.created_at >= datetime($since)
+                RETURN n.id AS id,
+                       'incident_created' AS event_type,
+                       'Incident' AS node_type,
+                       coalesce(n.title, n.id) AS title,
+                       coalesce(n.severity, '') AS severity,
+                       n.created_at AS created_at
+                UNION ALL
+                MATCH (n:ActionItem)
+                WHERE n.created_at >= datetime($since)
+                RETURN n.id AS id,
+                       'action_item_created' AS event_type,
+                       'ActionItem' AS node_type,
+                       coalesce(n.title, n.id) AS title,
+                       '' AS severity,
+                       n.created_at AS created_at
+                UNION ALL
+                MATCH (n:PatternCluster)
+                WHERE n.created_at >= datetime($since)
+                RETURN n.id AS id,
+                       'pattern_detected' AS event_type,
+                       'PatternCluster' AS node_type,
+                       coalesce(n.name, n.id) AS title,
+                       '' AS severity,
+                       n.created_at AS created_at
+                UNION ALL
+                MATCH (n:Strategy)
+                WHERE n.created_at >= datetime($since)
+                RETURN n.id AS id,
+                       'strategy_created' AS event_type,
+                       'Strategy' AS node_type,
+                       coalesce(n.title, n.id) AS title,
+                       '' AS severity,
+                       n.created_at AS created_at
+            }
+            RETURN id, event_type, node_type, title, severity, created_at
+            ORDER BY created_at DESC
+            LIMIT $limit
+            """
+            fallback_result = client.read(fallback_query, {"since": since_iso, "limit": limit})
+            for row in fallback_result:
+                node_type = row.get("node_type", "Unknown")
+                event_type = row.get("event_type", "node_created")
+                title = row.get("title") or row.get("id") or "Unknown"
+                events.append({
+                    "id": row.get("id"),
+                    "event_type": event_type,
+                    "node_type": node_type,
+                    "node_id": row.get("id"),
+                    "title": title,
+                    "change_description": f"{node_type} created: {title}",
+                    "severity": row.get("severity") or None,
+                    "created_at": _convert_datetime(row.get("created_at")),
+                })
+
         return {
             "events": events,
             "count": len(events),
@@ -781,7 +927,9 @@ def get_stats() -> Dict[str, Any]:
         """)
         
         open_action_items = sum(r["count"] for r in action_item_status if r["status"] == "open")
-        resolved_action_items = sum(r["count"] for r in action_item_status if r["status"] == "resolved")
+        # Treat done/closed/completed as resolved for consistent counts across endpoints
+        _RESOLVED_STATUSES = {"resolved", "done", "closed", "completed"}
+        resolved_action_items = sum(r["count"] for r in action_item_status if r["status"] in _RESOLVED_STATUSES)
         
         strategy_status = client.read("""
             MATCH (s:Strategy)
@@ -818,6 +966,206 @@ def get_stats() -> Dict[str, Any]:
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch stats: {str(e)}")
+
+
+@app.get("/system-health-detailed", response_model=SystemHealthDetailedResponse, tags=["health"])
+def get_system_health_detailed() -> Dict[str, Any]:
+    """
+    Get detailed system health metrics.
+
+    Returns real-time LLM call rates (broken down by provider), graph write
+    rates, and agent run duration statistics.  All Neo4j DateTime values are
+    converted to ISO-8601 strings before Pydantic validation to prevent
+    serialization errors.
+    """
+    client = _get_neo4j_client()
+    now = datetime.now(timezone.utc)
+    one_hour_ago = (now - timedelta(hours=1)).isoformat()
+
+    try:
+        # ------------------------------------------------------------------
+        # LLM calls per hour broken down by provider
+        # LLMTokenUsage nodes are written by agents; provider is derived from
+        # the model name (e.g. "claude-*" -> "claude", "gpt-*" -> "openai").
+        # ------------------------------------------------------------------
+        llm_rows = client.read(
+            """
+            MATCH (u:LLMTokenUsage)
+            WHERE u.created_at >= datetime($since)
+            RETURN
+                CASE
+                    WHEN u.model STARTS WITH 'claude' THEN 'claude'
+                    WHEN u.model STARTS WITH 'gpt'    THEN 'openai'
+                    WHEN u.model STARTS WITH 'kimi'   THEN 'kimi'
+                    WHEN u.model STARTS WITH 'glm'    THEN 'glm'
+                    ELSE coalesce(u.provider, 'unknown')
+                END AS provider,
+                count(u) AS calls
+            ORDER BY calls DESC
+            """,
+            {"since": one_hour_ago},
+        )
+
+        # Total rows regardless of time window (for per-hour denominator)
+        llm_total_rows = client.read(
+            """
+            MATCH (u:LLMTokenUsage)
+            RETURN
+                CASE
+                    WHEN u.model STARTS WITH 'claude' THEN 'claude'
+                    WHEN u.model STARTS WITH 'gpt'    THEN 'openai'
+                    WHEN u.model STARTS WITH 'kimi'   THEN 'kimi'
+                    WHEN u.model STARTS WITH 'glm'    THEN 'glm'
+                    ELSE coalesce(u.provider, 'unknown')
+                END AS provider,
+                count(u) AS total_calls
+            ORDER BY total_calls DESC
+            """,
+        )
+        total_by_provider: Dict[str, int] = {
+            r.get("provider", "unknown"): int(r.get("total_calls", 0) or 0)
+            for r in llm_total_rows
+        }
+
+        llm_calls_per_hour: List[Dict[str, Any]] = []
+        total_cph = 0.0
+        for r in llm_rows:
+            provider = r.get("provider", "unknown") or "unknown"
+            calls_last_hour = int(r.get("calls", 0) or 0)
+            total_llm_calls_for_provider = total_by_provider.get(provider, calls_last_hour)
+            llm_calls_per_hour.append({
+                "provider": provider,
+                "calls_per_hour": float(calls_last_hour),
+                "total_calls": total_llm_calls_for_provider,
+            })
+            total_cph += float(calls_last_hour)
+
+        # ------------------------------------------------------------------
+        # Graph writes per hour (ActivityEvent nodes created by agents)
+        # ------------------------------------------------------------------
+        write_rows = client.read(
+            """
+            MATCH (ae:ActivityEvent)
+            WHERE ae.created_at >= datetime($since)
+            RETURN count(ae) AS writes_last_hour
+            """,
+            {"since": one_hour_ago},
+        )
+        writes_last_hour = int((write_rows[0].get("writes_last_hour", 0) if write_rows else 0) or 0)
+
+        total_write_rows = client.read(
+            """
+            MATCH (ae:ActivityEvent)
+            RETURN count(ae) AS total_writes, max(ae.created_at) AS last_write_at
+            """,
+        )
+        total_writes_val = 0
+        last_write_at_val: Optional[str] = None
+        if total_write_rows:
+            total_writes_val = int(total_write_rows[0].get("total_writes", 0) or 0)
+            # Neo4j DateTime -> ISO string conversion happens here
+            last_write_at_val = _convert_datetime(total_write_rows[0].get("last_write_at"))
+
+        graph_writes: Dict[str, Any] = {
+            "writes_per_hour": float(writes_last_hour),
+            "total_writes": total_writes_val,
+            "last_write_at": last_write_at_val,
+        }
+
+        # ------------------------------------------------------------------
+        # Agent run durations from ActivityEvent nodes that carry duration info
+        # ------------------------------------------------------------------
+        duration_rows = client.read(
+            """
+            MATCH (ae:ActivityEvent)
+            WHERE ae.duration_seconds IS NOT NULL
+            RETURN ae.agent_name AS agent_name,
+                   avg(ae.duration_seconds) AS avg_duration,
+                   min(ae.duration_seconds) AS min_duration,
+                   max(ae.duration_seconds) AS max_duration,
+                   count(ae) AS run_count
+            ORDER BY run_count DESC
+            LIMIT 20
+            """,
+        )
+
+        agent_run_durations: List[Dict[str, Any]] = [
+            {
+                "agent_name": r.get("agent_name", "unknown") or "unknown",
+                "avg_duration_seconds": float(r.get("avg_duration", 0.0) or 0.0),
+                "min_duration_seconds": float(r.get("min_duration", 0.0) or 0.0),
+                "max_duration_seconds": float(r.get("max_duration", 0.0) or 0.0),
+                "run_count": int(r.get("run_count", 0) or 0),
+            }
+            for r in duration_rows
+        ]
+
+        return {
+            "status": "healthy",
+            "timestamp": now.isoformat(),
+            "llm_calls_per_hour": llm_calls_per_hour,
+            "graph_writes": graph_writes,
+            "agent_run_durations": agent_run_durations,
+            "total_llm_calls_per_hour": total_cph,
+            "generated_at": now.isoformat(),
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch detailed health metrics: {str(e)}",
+        )
+
+
+@app.get("/llm-usage", response_model=LLMUsageResponse, tags=["statistics"])
+def get_llm_usage() -> Dict[str, Any]:
+    """
+    Get LLM token usage statistics aggregated from LLMTokenUsage nodes.
+
+    Returns total calls, tokens broken down by model and agent.
+    """
+    client = _get_neo4j_client()
+
+    try:
+        totals = client.read("""
+            MATCH (u:LLMTokenUsage)
+            RETURN
+                count(u) AS total_calls,
+                sum(u.total_tokens) AS total_tokens,
+                sum(u.prompt_tokens) AS total_prompt_tokens,
+                sum(u.completion_tokens) AS total_completion_tokens
+        """)
+        row = totals[0] if totals else {}
+
+        by_model = client.read("""
+            MATCH (u:LLMTokenUsage)
+            RETURN u.model AS model,
+                   count(u) AS calls,
+                   sum(u.total_tokens) AS total_tokens
+            ORDER BY total_tokens DESC
+        """)
+
+        by_agent = client.read("""
+            MATCH (u:LLMTokenUsage)
+            RETURN u.agent_name AS agent,
+                   count(u) AS calls,
+                   sum(u.total_tokens) AS total_tokens
+            ORDER BY total_tokens DESC
+        """)
+
+        return {
+            "usage": {
+                "total_llm_calls": row.get("total_calls", 0) or 0,
+                "total_tokens": row.get("total_tokens", 0) or 0,
+                "total_prompt_tokens": row.get("total_prompt_tokens", 0) or 0,
+                "total_completion_tokens": row.get("total_completion_tokens", 0) or 0,
+                "by_model": [dict(r) for r in by_model],
+                "by_agent": [dict(r) for r in by_agent],
+            },
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch LLM usage: {str(e)}")
 
 
 @app.get("/nodes/{node_id}", response_model=NodeDetailsResponse, tags=["nodes"])
@@ -893,6 +1241,158 @@ def get_node_details(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch node details: {str(e)}")
+
+
+# ============================================================================
+# Manual Trigger Endpoints
+# ============================================================================
+
+@app.post("/trigger-sync", tags=["manual-triggers"])
+def trigger_sync() -> Dict[str, Any]:
+    """
+    Manually trigger GitHub sync and transformation.
+
+    Fetches new/updated issues from GitHub, transforms them into Neo4j nodes,
+    and returns detailed metrics about what changed.
+
+    Returns:
+        success: bool
+        duration_ms: int
+        timestamp: ISO-8601 string
+        summary:
+          issues_added: int
+          issues_updated: int
+          issues_skipped: int
+          total_processed: int
+        changes: list of {action, title, number}
+        errors: list of error strings
+        graph_stats: dict of Neo4j node counts
+    """
+    import time
+    start_ms = int(time.time() * 1000)
+
+    errors: list = []
+    summary: Dict[str, int] = {
+        "issues_added": 0,
+        "issues_updated": 0,
+        "issues_skipped": 0,
+        "total_processed": 0,
+    }
+    changes: list = []
+
+    try:
+        sync_result = incremental_sync()
+
+        if isinstance(sync_result, dict):
+            summary.update(sync_result.get("summary", {}))
+            changes = sync_result.get("changes", [])
+            errors.extend(sync_result.get("errors", []))
+        else:
+            # Legacy: plain list
+            issues = sync_result if isinstance(sync_result, list) else []
+            summary["issues_added"] = len(issues)
+            summary["total_processed"] = len(issues)
+            changes = [
+                {"action": "added", "title": iss.get("title", ""), "number": iss.get("github_issue_number")}
+                for iss in issues
+            ]
+    except Exception as e:
+        errors.append(f"Sync error: {str(e)}")
+
+    # Transform to Neo4j (always attempt)
+    graph_stats: Dict[str, Any] = {}
+    try:
+        try:
+            from scripts.transform_issues_to_graph import transform_issues_to_graph
+        except ImportError:
+            transform_issues_to_graph = None  # type: ignore
+
+        if transform_issues_to_graph is not None:
+            graph_stats = transform_issues_to_graph()
+        else:
+            errors.append("transform_issues_to_graph module not available")
+    except Exception as e:
+        errors.append(f"Transform error: {str(e)}")
+
+    duration_ms = int(time.time() * 1000) - start_ms
+
+    # Emit ActivityEvent nodes for each change so /change-feed reflects real
+    # sync activity.  Best-effort: failures here must not fail the sync call.
+    try:
+        from graph.client import write as neo4j_write
+        import uuid as _uuid
+        for change in changes[:50]:  # cap at 50 to avoid huge batches
+            action = change.get("action", "synced")
+            title = change.get("title") or "GitHub issue"
+            issue_num = change.get("number")
+            event_type = f"github_issue_{action}"
+            msg = f"GitHub issue #{issue_num} {action}: {title}" if issue_num else f"GitHub issue {action}: {title}"
+            neo4j_write("""
+                CREATE (ae:ActivityEvent {
+                    id: $id,
+                    agent_name: $agent_name,
+                    event_type: $event_type,
+                    message: $message,
+                    details: $details,
+                    linked_node_id: $linked_node_id,
+                    linked_node_type: 'Incident',
+                    created_at: datetime(),
+                    updated_at: datetime()
+                })
+            """, {
+                "id": f"evt-sync-{_uuid.uuid4().hex[:12]}",
+                "agent_name": "dashboard_sync",
+                "event_type": event_type,
+                "message": msg,
+                "details": str(change),
+                "linked_node_id": str(issue_num) if issue_num else "",
+            })
+    except Exception:
+        pass  # event logging is non-critical
+
+    return {
+        "success": len(errors) == 0,
+        "duration_ms": duration_ms,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "summary": summary,
+        "changes": changes,
+        "errors": errors,
+        "graph_stats": graph_stats,
+    }
+
+
+@app.get("/system-status", tags=["manual-triggers"])
+def system_status() -> Dict[str, Any]:
+    """
+    Get current system status and last sync information.
+    """
+    try:
+        client = _get_neo4j_client()
+
+        counts = client.read("""
+            MATCH (i:Incident) WITH count(i) as incidents
+            MATCH (ai:ActionItem) WITH incidents, count(ai) as actions
+            MATCH (pc:PatternCluster) WITH incidents, actions, count(pc) as patterns
+            MATCH (s:Strategy) WITH incidents, actions, patterns, count(s) as strategies
+            RETURN incidents, actions, patterns, strategies
+        """)
+
+        sync_state = load_sync_state()
+
+        return {
+            "status": "healthy",
+            "last_sync": sync_state.get("last_sync"),
+            "node_counts": {
+                "incidents": counts[0]["incidents"] if counts else 0,
+                "action_items": counts[0]["actions"] if counts else 0,
+                "patterns": counts[0]["patterns"] if counts else 0,
+                "strategies": counts[0]["strategies"] if counts else 0,
+            },
+            "repository": os.getenv("GITHUB_REPO", "unknown"),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Status check failed: {str(e)}")
 
 
 # ============================================================================

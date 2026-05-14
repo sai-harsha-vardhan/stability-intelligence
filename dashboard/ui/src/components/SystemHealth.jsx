@@ -6,6 +6,7 @@ const POLL_INTERVAL = 30000 // 30 seconds
 
 const SystemHealth = ({ fullWidth = false }) => {
   const [health, setHealth] = useState(null)
+  const [metrics, setMetrics] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [lastUpdated, setLastUpdated] = useState(null)
@@ -36,6 +37,17 @@ const SystemHealth = ({ fullWidth = false }) => {
         components: {},
         timestamp: new Date().toISOString()
       })
+    }
+
+    // Fetch detailed metrics separately — errors here are non-fatal
+    try {
+      const metricsResponse = await fetch(`${API_BASE_URL}/system-health-detailed`)
+      if (metricsResponse.ok) {
+        const metricsData = await metricsResponse.json()
+        setMetrics(metricsData)
+      }
+    } catch (_err) {
+      // Detailed metrics unavailable — silently ignore, UI falls back to null
     }
   }
 
@@ -153,6 +165,67 @@ const SystemHealth = ({ fullWidth = false }) => {
             </div>
           ))}
         </div>
+
+        {/* Detailed metrics from /system-health-detailed */}
+        {metrics && (
+          <div className="health-detailed-metrics">
+            <h4>Live Metrics</h4>
+
+            <div className="metrics-section">
+              <h5>🧠 LLM Calls / Hour</h5>
+              {metrics.llm_calls_per_hour && metrics.llm_calls_per_hour.length > 0 ? (
+                <div className="metrics-table">
+                  {metrics.llm_calls_per_hour.map((row) => (
+                    <div key={row.provider} className="metrics-row">
+                      <span className="metrics-label">{row.provider}</span>
+                      <span className="metrics-value">{row.calls_per_hour.toFixed(1)}/hr</span>
+                      <span className="metrics-sub">({row.total_calls} total)</span>
+                    </div>
+                  ))}
+                  <div className="metrics-row metrics-total">
+                    <span className="metrics-label">Total</span>
+                    <span className="metrics-value">{metrics.total_llm_calls_per_hour.toFixed(1)}/hr</span>
+                  </div>
+                </div>
+              ) : (
+                <p className="metrics-empty">No LLM usage recorded yet.</p>
+              )}
+            </div>
+
+            <div className="metrics-section">
+              <h5>📝 Graph Writes / Hour</h5>
+              <div className="metrics-row">
+                <span className="metrics-label">Rate</span>
+                <span className="metrics-value">{metrics.graph_writes.writes_per_hour.toFixed(1)}/hr</span>
+              </div>
+              <div className="metrics-row">
+                <span className="metrics-label">Total writes</span>
+                <span className="metrics-value">{metrics.graph_writes.total_writes}</span>
+              </div>
+              {metrics.graph_writes.last_write_at && (
+                <div className="metrics-row">
+                  <span className="metrics-label">Last write</span>
+                  <span className="metrics-value">{formatTimeSince(metrics.graph_writes.last_write_at)}</span>
+                </div>
+              )}
+            </div>
+
+            {metrics.agent_run_durations && metrics.agent_run_durations.length > 0 && (
+              <div className="metrics-section">
+                <h5>⏱ Agent Run Durations</h5>
+                <div className="metrics-table">
+                  {metrics.agent_run_durations.map((row) => (
+                    <div key={row.agent_name} className="metrics-row">
+                      <span className="metrics-label">{row.agent_name}</span>
+                      <span className="metrics-value">{row.avg_duration_seconds.toFixed(2)}s avg</span>
+                      <span className="metrics-sub">({row.run_count} runs)</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         
         {fullWidth && (
           <div className="health-details">
