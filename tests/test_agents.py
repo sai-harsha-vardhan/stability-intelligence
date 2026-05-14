@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agents.base import BaseAgent
+from agents.rca_pattern_agent import RcaPatternAgent
 
 
 class TestBaseAgent:
@@ -248,3 +249,85 @@ class TestAgentIntegration:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestRcaPatternAgent:
+    """Tests for RcaPatternAgent."""
+
+    @patch('agents.base.get_client')
+    def test_init(self, mock_get_client):
+        """RcaPatternAgent initialises with correct name."""
+        agent = RcaPatternAgent()
+        assert agent.name == "rca_pattern_agent"
+
+    @patch('agents.base.get_client')
+    def test_link_components_creates_relationships(self, mock_get_client):
+        """_link_components_to_cluster should create Component nodes and AFFECTS edges."""
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+
+        agent = RcaPatternAgent()
+
+        written_queries = []
+        def fake_write(cypher, params=None):
+            written_queries.append((cypher, params))
+            return [{"component_name": params.get("component_name") if params else "x"}]
+
+        agent.write_graph = fake_write
+
+        cluster = {
+            "id": "pc-test",
+            "name": "Test Cluster",
+            "flows_per_incident": [["payment-service", "checkout-flow"], ["payment-service"]],
+        }
+        result = agent._link_components_to_cluster(cluster)
+
+        # Should link 2 unique components
+        assert result == 2
+        # 2 MERGE queries + 1 SET property update
+        assert len(written_queries) == 3
+
+    @patch('agents.base.get_client')
+    def test_link_components_no_flows(self, mock_get_client):
+        """_link_components_to_cluster returns 0 when no flows present."""
+        mock_get_client.return_value = MagicMock()
+        agent = RcaPatternAgent()
+
+        cluster = {"id": "pc-empty", "name": "Empty", "flows_per_incident": []}
+        result = agent._link_components_to_cluster(cluster)
+        assert result == 0
+
+    @patch('agents.base.get_client')
+    def test_run_calls_log_activity(self, mock_get_client):
+        """RcaPatternAgent.run() should log activity after processing."""
+        mock_get_client.return_value = MagicMock()
+        agent = RcaPatternAgent()
+
+        agent.query_graph = MagicMock(return_value=[])
+        agent.log_activity = MagicMock()
+
+        agent.run()
+
+        agent.log_activity.assert_called_once()
+
+    @patch('agents.base.get_client')
+    def test_run_processes_clusters(self, mock_get_client):
+        """RcaPatternAgent.run() processes each cluster and links components."""
+        mock_get_client.return_value = MagicMock()
+        agent = RcaPatternAgent()
+
+        clusters = [
+            {
+                "id": "pc-1",
+                "name": "Cluster 1",
+                "flows_per_incident": [["payments", "fraud-check"]],
+            }
+        ]
+        agent.query_graph = MagicMock(return_value=clusters)
+        agent._link_components_to_cluster = MagicMock(return_value=2)
+        agent.log_activity = MagicMock()
+
+        agent.run()
+
+        agent._link_components_to_cluster.assert_called_once_with(clusters[0])
+        agent.log_activity.assert_called_once()

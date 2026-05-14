@@ -258,6 +258,7 @@ class TestPatternsEndpoint:
                 "open_action_items": 2,
                 "strategies": 0,
                 "affected_components": ["payment-service", "checkout-flow"],
+                "component_names": [],
             }
         ]
         mock_get_client.return_value = mock_client
@@ -270,15 +271,44 @@ class TestPatternsEndpoint:
         assert cluster["affected_components"] == ["payment-service", "checkout-flow"]
 
     @patch('dashboard.api.main.get_client')
+    def test_patterns_merges_component_names_from_affects(self, mock_get_client):
+        """Patterns endpoint merges AFFECTS-joined component_names with property."""
+        mock_client = MagicMock()
+        mock_client.read.return_value = [
+            {
+                "id": "pc-1",
+                "name": "Payment timeout",
+                "description": "Timeout issues",
+                "frequency": 5,
+                "trend": "worsening",
+                "incident_count": 5,
+                "open_action_items": 2,
+                "strategies": 0,
+                "affected_components": ["payment-service"],
+                "component_names": ["checkout-flow"],
+            }
+        ]
+        mock_get_client.return_value = mock_client
+
+        response = client.get("/patterns")
+        assert response.status_code == 200
+        data = response.json()
+        cluster = data["clusters"][0]
+        assert "payment-service" in cluster["affected_components"]
+        assert "checkout-flow" in cluster["affected_components"]
+        assert len(cluster["affected_components"]) == 2
+
+    @patch('dashboard.api.main.get_client')
     def test_patterns_triggers_backfill_when_all_empty(self, mock_get_client):
         """Patterns endpoint should trigger backfill when all clusters have empty affected_components."""
         mock_client = MagicMock()
-        # First read returns empty components, second read (post-backfill) returns filled
         mock_client.read.side_effect = [
             [{"id": "pc-1", "name": "Pattern", "description": "", "frequency": 3, "trend": "stable",
-              "incident_count": 3, "open_action_items": 1, "strategies": 0, "affected_components": []}],
+              "incident_count": 3, "open_action_items": 1, "strategies": 0,
+              "affected_components": [], "component_names": []}],
             [{"id": "pc-1", "name": "Pattern", "description": "", "frequency": 3, "trend": "stable",
-              "incident_count": 3, "open_action_items": 1, "strategies": 0, "affected_components": ["payments"]}],
+              "incident_count": 3, "open_action_items": 1, "strategies": 0,
+              "affected_components": ["payments"], "component_names": []}],
         ]
         mock_client.write.return_value = [{"updated": 1}]
         mock_get_client.return_value = mock_client
@@ -286,9 +316,7 @@ class TestPatternsEndpoint:
         response = client.get("/patterns")
         assert response.status_code == 200
         data = response.json()
-        # write should have been called for backfill
         mock_client.write.assert_called_once()
-        # Should return the refetched data with components
         assert data["clusters"][0]["affected_components"] == ["payments"]
 
 

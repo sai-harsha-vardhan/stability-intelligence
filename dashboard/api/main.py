@@ -475,6 +475,17 @@ def get_patterns(
     try:
         query = get_query("get_pattern_clusters")
         clusters_result = client.read(query)
+
+        # If all clusters have empty affected_components, trigger a backfill from incident data
+        all_empty = all(
+            not (pc.get("affected_components") or []) and not (pc.get("component_names") or [])
+            for pc in clusters_result
+        )
+        if all_empty and clusters_result:
+            backfill_query = get_query("backfill_pattern_cluster_components")
+            client.write(backfill_query)
+            # Re-fetch after backfill
+            clusters_result = client.read(query)
         
         # If all clusters have empty affected_components, trigger a backfill from incident data
         all_empty = all(not (pc.get("affected_components") or []) for pc in clusters_result)
@@ -491,7 +502,18 @@ def get_patterns(
                 continue
             if pc.get("frequency", 0) < min_frequency:
                 continue
-            
+
+            # Merge affected_components from property AND AFFECTS-joined component_names
+            prop_components = list(pc.get("affected_components") or [])
+            joined_components = list(pc.get("component_names") or [])
+            # Deduplicate while preserving order; property values take precedence
+            seen = set()
+            merged = []
+            for c in prop_components + joined_components:
+                if c and c not in seen:
+                    seen.add(c)
+                    merged.append(c)
+
             clusters.append({
                 "id": pc.get("id"),
                 "name": pc.get("name", ""),
@@ -501,7 +523,7 @@ def get_patterns(
                 "incident_count": pc.get("incident_count", 0),
                 "open_action_items": pc.get("open_action_items", 0),
                 "strategies": pc.get("strategies", 0),
-                "affected_components": pc.get("affected_components", []) or [],
+                "affected_components": merged,
             })
         
         return {

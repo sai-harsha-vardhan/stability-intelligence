@@ -179,15 +179,47 @@ MATCH (pc:PatternCluster)
 OPTIONAL MATCH (pc)<-[:BELONGS_TO_CLUSTER]-(i:Incident)
 OPTIONAL MATCH (pc)<-[:BLOCKS_PATTERN]-(ai:ActionItem {status: 'open'})
 OPTIONAL MATCH (pc)<-[:ADDRESSES_PATTERN]-(s:Strategy)
+OPTIONAL MATCH (pc)-[:AFFECTS]->(c:Component)
 RETURN pc.id AS id,
        pc.name AS name,
        pc.description AS description,
        pc.frequency AS frequency,
        pc.trend AS trend,
+       COALESCE(pc.affected_components, []) AS affected_components,
        count(DISTINCT i) AS incident_count,
        count(DISTINCT ai) AS open_action_items,
-       count(DISTINCT s) AS strategies
+       count(DISTINCT s) AS strategies,
+       collect(DISTINCT c.name) AS component_names
 ORDER BY pc.frequency DESC
+"""
+
+BACKFILL_PATTERN_CLUSTER_COMPONENTS = """
+MATCH (pc:PatternCluster)
+WHERE (pc.affected_components IS NULL OR size(pc.affected_components) = 0)
+WITH pc
+MATCH (pc)<-[:BELONGS_TO_CLUSTER]-(i:Incident)
+WHERE i.affected_flows IS NOT NULL
+WITH pc, i.affected_flows AS flows
+UNWIND flows AS flow
+WITH pc, flow WHERE flow IS NOT NULL AND flow <> ''
+WITH pc, collect(DISTINCT flow) AS all_flows
+SET pc.affected_components = all_flows[0..10]
+RETURN pc.id AS id, pc.affected_components AS affected_components
+"""
+
+CREATE_COMPONENT_AND_AFFECTS = """
+MERGE (c:Component {name: $component_name})
+ON CREATE SET c.id = $component_id,
+              c.component_type = 'module',
+              c.stability_score = 1.0,
+              c.incident_count = 0,
+              c.created_at = datetime(),
+              c.updated_at = datetime()
+ON MATCH SET  c.updated_at = datetime()
+WITH c
+MATCH (pc:PatternCluster {id: $pattern_cluster_id})
+MERGE (pc)-[:AFFECTS]->(c)
+RETURN c.name AS component_name, pc.id AS pattern_cluster_id
 """
 
 
@@ -266,6 +298,8 @@ def get_query(name: str) -> str:
         "get_top_strategies": GET_TOP_STRATEGIES,
         # Patterns
         "get_pattern_clusters": GET_PATTERN_CLUSTERS,
+        "backfill_pattern_cluster_components": BACKFILL_PATTERN_CLUSTER_COMPONENTS,
+        "create_component_and_affects": CREATE_COMPONENT_AND_AFFECTS,
         # Visualization
         "get_all_nodes_for_visualization": GET_ALL_NODES_FOR_VISUALIZATION,
         "get_all_edges_for_visualization": GET_ALL_EDGES_FOR_VISUALIZATION,
