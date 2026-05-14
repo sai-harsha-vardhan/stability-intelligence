@@ -1011,6 +1011,7 @@
 }
 
 .langfuse-link,
+.langfuse-trace-link,
 .view-node-btn {
   font-size: 0.75rem;
   padding: 0.25rem 0.5rem;
@@ -1024,6 +1025,7 @@
 }
 
 .langfuse-link:hover,
+.langfuse-trace-link:hover,
 .view-node-btn:hover {
   background: var(--accent-primary);
   color: white;

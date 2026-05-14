@@ -214,7 +214,7 @@ const AgentActivity = ({ limit = 50 }) => {
                       </a>
                     )}
                     
-                    {event.linked_node_id && event.linked_node_type === 'langfuse_trace' ? (
+                    {event.linked_node_id && event.linked_node_type === 'langfuse_trace' && (
                       <a
                         href={`${LANGFUSE_BASE_URL}/traces/${event.linked_node_id}`}
                         target="_blank"
@@ -224,7 +224,9 @@ const AgentActivity = ({ limit = 50 }) => {
                       >
                         View Langfuse trace ↗
                       </a>
-                    ) : event.linked_node_id && (
+                    )}
+                    
+                    {event.linked_node_id && event.linked_node_type !== 'langfuse_trace' && (
                       <button 
                         className="view-node-btn"
                         title={`View ${event.linked_node_type}: ${event.linked_node_id}`}
