@@ -407,10 +407,10 @@ class TestActivityEndpoint:
 
 class TestChangeFeedEndpoint:
     """Test /change-feed endpoint (real-time changes)."""
-    
+
     @patch('dashboard.api.main.get_client')
-    def test_change_feed_returns_events(self, mock_get_client):
-        """Change feed endpoint should return recent changes."""
+    def test_change_feed_returns_activity_events(self, mock_get_client):
+        """Change feed returns ActivityEvent nodes when they exist."""
         mock_client = MagicMock()
         mock_client.read.return_value = [
             {
@@ -425,7 +425,7 @@ class TestChangeFeedEndpoint:
             }
         ]
         mock_get_client.return_value = mock_client
-        
+
         response = client.get("/change-feed")
         assert response.status_code == 200
         data = response.json()
@@ -433,9 +433,59 @@ class TestChangeFeedEndpoint:
         assert "count" in data
         assert "generated_at" in data
         event = data["events"][0]
-        assert "event_type" in event
-        assert "node_type" in event
-        assert "severity" in event
+        assert event["event_type"] == "ingestion"
+        assert event["node_type"] == "Incident"
+        assert event["severity"] == "P1"
+        assert event["title"] == "Payment failure"
+        # Verify the query uses datetime() casting — read called once (no fallback)
+        mock_client.read.assert_called_once()
+        cypher = mock_client.read.call_args[0][0]
+        assert "datetime($since)" in cypher
+
+    @patch('dashboard.api.main.get_client')
+    def test_change_feed_falls_back_to_graph_nodes(self, mock_get_client):
+        """When no ActivityEvents exist, change feed falls back to Incident/ActionItem/etc. nodes."""
+        mock_client = MagicMock()
+        # First call (ActivityEvent query) returns empty; second call (fallback) returns rows
+        mock_client.read.side_effect = [
+            [],  # ActivityEvent query — no results
+            [
+                {
+                    "id": "inc-456",
+                    "event_type": "incident_created",
+                    "node_type": "Incident",
+                    "title": "DB timeout",
+                    "severity": "critical",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ],
+        ]
+        mock_get_client.return_value = mock_client
+
+        response = client.get("/change-feed")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["count"] == 1
+        event = data["events"][0]
+        assert event["event_type"] == "incident_created"
+        assert event["node_type"] == "Incident"
+        assert event["severity"] == "critical"
+        # Fallback query should also use datetime() casting
+        fallback_cypher = mock_client.read.call_args[0][0]
+        assert "datetime($since)" in fallback_cypher
+
+    @patch('dashboard.api.main.get_client')
+    def test_change_feed_returns_empty_when_no_data(self, mock_get_client):
+        """Change feed returns empty list when neither ActivityEvents nor graph nodes exist."""
+        mock_client = MagicMock()
+        mock_client.read.side_effect = [[], []]
+        mock_get_client.return_value = mock_client
+
+        response = client.get("/change-feed")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["events"] == []
+        assert data["count"] == 0
 
 
 class TestStatsEndpoint:
@@ -683,157 +733,6 @@ class TestSystemHealthDetailedEndpoint:
         mock_get_client.side_effect = Exception("Neo4j connection refused")
         response = client.get("/system-health-detailed")
         assert response.status_code == 503
-
-
-class TestTriggerSyncEndpoint:
-    """Test /trigger-sync endpoint."""
-
-    @patch('dashboard.api.main.incremental_sync')
-    @patch('dashboard.api.main.neo4j_write', create=True)
-    def test_trigger_sync_returns_detailed_response(self, mock_neo4j_write, mock_sync):
-        """POST /trigger-sync should return success, duration, summary, and changes."""
-        mock_sync.return_value = {
-            "summary": {"issues_added": 3, "issues_updated": 5, "issues_skipped": 10, "total_processed": 18},
-            "changes": [
-                {"action": "added", "title": "Fix login bug", "number": 101},
-                {"action": "updated", "title": "Improve search", "number": 102},
-            ],
-            "errors": [],
-        }
-
-        # Patch the dynamic import inside trigger_sync
-        mock_transform_mod = MagicMock()
-        mock_transform_mod.transform_issues_to_graph.return_value = {"nodes": 50}
-        with patch.dict('sys.modules', {'scripts.transform_issues_to_graph': mock_transform_mod}), \
-             patch('graph.client.write', return_value=None, create=True):
-            response = client.post("/trigger-sync")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["success"] is True
-        assert "duration_ms" in data
-        assert "timestamp" in data
-        assert data["summary"]["issues_added"] == 3
-        assert data["summary"]["issues_updated"] == 5
-        assert data["summary"]["issues_skipped"] == 10
-        assert len(data["changes"]) == 2
-        assert data["errors"] == []
-
-    @patch('dashboard.api.main.incremental_sync')
-    def test_trigger_sync_handles_sync_error(self, mock_sync):
-        """Sync errors should be captured in errors list, not raise HTTP 500."""
-        mock_sync.side_effect = Exception("GitHub API rate limited")
-
-        with patch('graph.client.write', return_value=None, create=True):
-            response = client.post("/trigger-sync")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["success"] is False
-        assert len(data["errors"]) > 0
-        assert "GitHub API rate limited" in data["errors"][0]
-
-    @patch('dashboard.api.main.incremental_sync')
-    def test_trigger_sync_legacy_list_format(self, mock_sync):
-        """Legacy incremental_sync returning a plain list should still work."""
-        mock_sync.return_value = [
-            {"title": "Old issue", "github_issue_number": 99},
-        ]
-
-        with patch('graph.client.write', return_value=None, create=True):
-            response = client.post("/trigger-sync")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["summary"]["issues_added"] == 1
-        assert data["summary"]["total_processed"] == 1
-
-
-class TestSystemStatusEndpoint:
-    """Test /system-status endpoint."""
-
-    @patch('dashboard.api.main.get_client')
-    @patch('dashboard.api.main.load_sync_state')
-    def test_system_status_returns_status(self, mock_load_sync, mock_get_client):
-        """GET /system-status should return node counts and last sync time."""
-        mock_client = MagicMock()
-        mock_client.read.return_value = [
-            {"incidents": 10, "actions": 20, "patterns": 5, "strategies": 3}
-        ]
-        mock_get_client.return_value = mock_client
-        mock_load_sync.return_value = {"last_sync": "2026-05-14T10:00:00+00:00"}
-
-        response = client.get("/system-status")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "healthy"
-        assert data["last_sync"] == "2026-05-14T10:00:00+00:00"
-        assert data["node_counts"]["incidents"] == 10
-        assert data["node_counts"]["action_items"] == 20
-
-
-class TestSyncStatusEndpoint:
-    """Test GET /sync-status endpoint."""
-
-    def test_sync_status_no_prior_sync(self):
-        """GET /sync-status with no prior sync and empty cache returns has_result=False."""
-        import dashboard.api.main as main_module
-        original = main_module._last_sync_result.copy()
-        main_module._last_sync_result.clear()
-
-        with patch('dashboard.api.main.load_sync_state', return_value={"last_sync": None}):
-            response = client.get("/sync-status")
-
-        main_module._last_sync_result.update(original)
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["has_result"] is False
-        assert data["errors"] == []
-        assert data["timestamp"] is None
-
-    def test_sync_status_with_persisted_timestamp(self):
-        """GET /sync-status falls back to persisted last_sync when cache is empty."""
-        import dashboard.api.main as main_module
-        original = main_module._last_sync_result.copy()
-        main_module._last_sync_result.clear()
-
-        with patch('dashboard.api.main.load_sync_state', return_value={"last_sync": "2026-05-14T10:00:00+00:00"}):
-            response = client.get("/sync-status")
-
-        main_module._last_sync_result.update(original)
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["has_result"] is True
-        assert data["timestamp"] == "2026-05-14T10:00:00+00:00"
-
-    def test_sync_status_returns_cached_result(self):
-        """GET /sync-status returns the in-memory cache when a sync has been run."""
-        import dashboard.api.main as main_module
-        original = main_module._last_sync_result.copy()
-        main_module._last_sync_result.update({
-            "success": True,
-            "timestamp": "2026-05-14T11:00:00+00:00",
-            "duration_ms": 1234,
-            "summary": {"issues_added": 2, "issues_updated": 3, "issues_skipped": 0, "total_processed": 5},
-            "changes": [],
-            "errors": [],
-            "graph_stats": {},
-        })
-
-        response = client.get("/sync-status")
-
-        main_module._last_sync_result.clear()
-        main_module._last_sync_result.update(original)
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["has_result"] is True
-        assert data["success"] is True
-        assert data["summary"]["issues_added"] == 2
-        assert data["errors"] == []
 
 
 if __name__ == "__main__":

@@ -32,7 +32,6 @@ from pydantic import BaseModel, Field
 from graph.client import get_client, query as neo4j_query
 from graph.queries import get_query
 from agents.base import BaseAgent
-from scripts.github_sync import incremental_sync, load_sync_state
 
 
 # ============================================================================
@@ -242,22 +241,6 @@ class SystemHealthDetailedResponse(BaseModel):
     generated_at: str
 
 
-class LLMUsageStats(BaseModel):
-    """LLM token usage statistics."""
-    total_llm_calls: int
-    total_tokens: int
-    total_prompt_tokens: int
-    total_completion_tokens: int
-    by_model: List[Dict[str, Any]]
-    by_agent: List[Dict[str, Any]]
-
-
-class LLMUsageResponse(BaseModel):
-    """LLM usage response."""
-    usage: LLMUsageStats
-    generated_at: str
-
-
 class NodeDetailsResponse(BaseModel):
     """Detailed node information."""
     id: str
@@ -347,8 +330,6 @@ def root() -> Dict[str, Any]:
             "/health",
             "/stats",
             "/nodes/{node_id}",
-            "/trigger-sync",
-            "/system-status",
         ],
     }
 
@@ -563,6 +544,7 @@ def get_progress(
         # Canonical resolved statuses — normalize done/closed/completed → resolved
         RESOLVED_STATUSES = {"resolved", "done", "closed", "completed"}
 
+
         items = []
         stats = {"total": 0, "open": 0, "in_progress": 0, "resolved": 0, "deferred": 0, "effective_count": 0, "ineffective_count": 0}
         
@@ -728,7 +710,7 @@ def get_change_feed(
 
         # Fallback: if no ActivityEvents exist, surface recent graph node
         # creations (Incidents, ActionItems, PatternClusters, Strategies) so
-        # the UI always shows real system activity instead of empty state.
+        # the UI always shows real system activity instead of an empty state.
         if not events:
             fallback_query = """
             CALL {
@@ -1117,57 +1099,6 @@ def get_system_health_detailed() -> Dict[str, Any]:
         )
 
 
-@app.get("/llm-usage", response_model=LLMUsageResponse, tags=["statistics"])
-def get_llm_usage() -> Dict[str, Any]:
-    """
-    Get LLM token usage statistics aggregated from LLMTokenUsage nodes.
-
-    Returns total calls, tokens broken down by model and agent.
-    """
-    client = _get_neo4j_client()
-
-    try:
-        totals = client.read("""
-            MATCH (u:LLMTokenUsage)
-            RETURN
-                count(u) AS total_calls,
-                sum(u.total_tokens) AS total_tokens,
-                sum(u.prompt_tokens) AS total_prompt_tokens,
-                sum(u.completion_tokens) AS total_completion_tokens
-        """)
-        row = totals[0] if totals else {}
-
-        by_model = client.read("""
-            MATCH (u:LLMTokenUsage)
-            RETURN u.model AS model,
-                   count(u) AS calls,
-                   sum(u.total_tokens) AS total_tokens
-            ORDER BY total_tokens DESC
-        """)
-
-        by_agent = client.read("""
-            MATCH (u:LLMTokenUsage)
-            RETURN u.agent_name AS agent,
-                   count(u) AS calls,
-                   sum(u.total_tokens) AS total_tokens
-            ORDER BY total_tokens DESC
-        """)
-
-        return {
-            "usage": {
-                "total_llm_calls": row.get("total_calls", 0) or 0,
-                "total_tokens": row.get("total_tokens", 0) or 0,
-                "total_prompt_tokens": row.get("total_prompt_tokens", 0) or 0,
-                "total_completion_tokens": row.get("total_completion_tokens", 0) or 0,
-                "by_model": [dict(r) for r in by_model],
-                "by_agent": [dict(r) for r in by_agent],
-            },
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch LLM usage: {str(e)}")
-
-
 @app.get("/nodes/{node_id}", response_model=NodeDetailsResponse, tags=["nodes"])
 def get_node_details(
     node_id: str = Path(..., description="Unique node identifier"),
@@ -1241,210 +1172,6 @@ def get_node_details(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch node details: {str(e)}")
-
-
-# ============================================================================
-# Manual Trigger Endpoints
-# ============================================================================
-
-# In-memory cache of the most recent sync result so /sync-status can return
-# it without hitting the filesystem on every request.
-_last_sync_result: Dict[str, Any] = {}
-
-
-@app.get("/sync-status", tags=["manual-triggers"])
-def get_sync_status() -> Dict[str, Any]:
-    """
-    Return the result of the most recent /trigger-sync call.
-
-    On first load (no sync ever run this process) falls back to the persisted
-    sync state file so the UI can show the last-sync timestamp even after a
-    server restart.
-
-    Returns:
-        has_result: bool — whether a sync has been recorded
-        success: bool | None
-        timestamp: ISO-8601 string | None
-        duration_ms: int | None
-        summary: {issues_added, issues_updated, issues_skipped, total_processed} | None
-        errors: list of error strings (empty when success)
-        graph_stats: dict | None
-    """
-    if _last_sync_result:
-        return {
-            "has_result": True,
-            **_last_sync_result,
-        }
-
-    # Fallback: read persisted sync state for last_sync timestamp
-    try:
-        sync_state = load_sync_state()
-        last_sync = sync_state.get("last_sync")
-    except Exception:
-        last_sync = None
-
-    return {
-        "has_result": last_sync is not None,
-        "success": None,
-        "timestamp": last_sync,
-        "duration_ms": None,
-        "summary": None,
-        "errors": [],
-        "graph_stats": None,
-    }
-
-
-@app.post("/trigger-sync", tags=["manual-triggers"])
-def trigger_sync() -> Dict[str, Any]:
-    """
-    Manually trigger GitHub sync and transformation.
-
-    Fetches new/updated issues from GitHub, transforms them into Neo4j nodes,
-    and returns detailed metrics about what changed.
-
-    Returns:
-        success: bool
-        duration_ms: int
-        timestamp: ISO-8601 string
-        summary:
-          issues_added: int
-          issues_updated: int
-          issues_skipped: int
-          total_processed: int
-        changes: list of {action, title, number}
-        errors: list of error strings
-        graph_stats: dict of Neo4j node counts
-    """
-    import time
-    start_ms = int(time.time() * 1000)
-
-    errors: list = []
-    summary: Dict[str, int] = {
-        "issues_added": 0,
-        "issues_updated": 0,
-        "issues_skipped": 0,
-        "total_processed": 0,
-    }
-    changes: list = []
-
-    try:
-        sync_result = incremental_sync()
-
-        if isinstance(sync_result, dict):
-            summary.update(sync_result.get("summary", {}))
-            changes = sync_result.get("changes", [])
-            errors.extend(sync_result.get("errors", []))
-        else:
-            # Legacy: plain list
-            issues = sync_result if isinstance(sync_result, list) else []
-            summary["issues_added"] = len(issues)
-            summary["total_processed"] = len(issues)
-            changes = [
-                {"action": "added", "title": iss.get("title", ""), "number": iss.get("github_issue_number")}
-                for iss in issues
-            ]
-    except Exception as e:
-        errors.append(f"Sync error: {str(e)}")
-
-    # Transform to Neo4j (always attempt)
-    graph_stats: Dict[str, Any] = {}
-    try:
-        try:
-            from scripts.transform_issues_to_graph import transform_issues_to_graph
-        except ImportError:
-            transform_issues_to_graph = None  # type: ignore
-
-        if transform_issues_to_graph is not None:
-            graph_stats = transform_issues_to_graph()
-        else:
-            errors.append("transform_issues_to_graph module not available")
-    except Exception as e:
-        errors.append(f"Transform error: {str(e)}")
-
-    duration_ms = int(time.time() * 1000) - start_ms
-
-    # Cache result so /sync-status can return it without filesystem access
-    result_payload: Dict[str, Any] = {
-        "success": len(errors) == 0,
-        "duration_ms": duration_ms,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "summary": summary,
-        "changes": changes,
-        "errors": errors,
-        "graph_stats": graph_stats,
-    }
-    global _last_sync_result
-    _last_sync_result = result_payload
-
-    # Emit ActivityEvent nodes for each change so /change-feed reflects real
-    # sync activity.  Best-effort: failures here must not fail the sync call.
-    try:
-        from graph.client import write as neo4j_write
-        import uuid as _uuid
-        for change in changes[:50]:  # cap at 50 to avoid huge batches
-            action = change.get("action", "synced")
-            title = change.get("title") or "GitHub issue"
-            issue_num = change.get("number")
-            event_type = f"github_issue_{action}"
-            msg = f"GitHub issue #{issue_num} {action}: {title}" if issue_num else f"GitHub issue {action}: {title}"
-            neo4j_write("""
-                CREATE (ae:ActivityEvent {
-                    id: $id,
-                    agent_name: $agent_name,
-                    event_type: $event_type,
-                    message: $message,
-                    details: $details,
-                    linked_node_id: $linked_node_id,
-                    linked_node_type: 'Incident',
-                    created_at: datetime(),
-                    updated_at: datetime()
-                })
-            """, {
-                "id": f"evt-sync-{_uuid.uuid4().hex[:12]}",
-                "agent_name": "dashboard_sync",
-                "event_type": event_type,
-                "message": msg,
-                "details": str(change),
-                "linked_node_id": str(issue_num) if issue_num else "",
-            })
-    except Exception:
-        pass  # event logging is non-critical
-
-    return result_payload
-
-
-@app.get("/system-status", tags=["manual-triggers"])
-def system_status() -> Dict[str, Any]:
-    """
-    Get current system status and last sync information.
-    """
-    try:
-        client = _get_neo4j_client()
-
-        counts = client.read("""
-            MATCH (i:Incident) WITH count(i) as incidents
-            MATCH (ai:ActionItem) WITH incidents, count(ai) as actions
-            MATCH (pc:PatternCluster) WITH incidents, actions, count(pc) as patterns
-            MATCH (s:Strategy) WITH incidents, actions, patterns, count(s) as strategies
-            RETURN incidents, actions, patterns, strategies
-        """)
-
-        sync_state = load_sync_state()
-
-        return {
-            "status": "healthy",
-            "last_sync": sync_state.get("last_sync"),
-            "node_counts": {
-                "incidents": counts[0]["incidents"] if counts else 0,
-                "action_items": counts[0]["actions"] if counts else 0,
-                "patterns": counts[0]["patterns"] if counts else 0,
-                "strategies": counts[0]["strategies"] if counts else 0,
-            },
-            "repository": os.getenv("GITHUB_REPO", "unknown"),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Status check failed: {str(e)}")
 
 
 # ============================================================================
