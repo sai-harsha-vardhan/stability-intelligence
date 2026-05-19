@@ -309,65 +309,52 @@ class TestProgressEndpoint:
         assert all(item["status"] == "open" for item in data["items"])
 
     @patch('dashboard.api.main.get_client')
-    def test_progress_normalizes_done_closed_completed_to_resolved(self, mock_get_client):
+    def test_progress_normalizes_done_to_resolved(self, mock_get_client):
         """Progress endpoint should normalize done/closed/completed status to resolved."""
         mock_client = MagicMock()
+        now = datetime.now(timezone.utc).isoformat()
         mock_client.read.return_value = [
-            {"id": "ai-1", "status": "done", "title": "T1", "assignee": "",
-             "priority_score": 0.0, "implementation_complexity": "low",
-             "created_at": None, "resolved_at": None, "effective": None,
-             "pattern_cluster_name": None},
-            {"id": "ai-2", "status": "closed", "title": "T2", "assignee": "",
-             "priority_score": 0.0, "implementation_complexity": "low",
-             "created_at": None, "resolved_at": None, "effective": None,
-             "pattern_cluster_name": None},
-            {"id": "ai-3", "status": "completed", "title": "T3", "assignee": "",
-             "priority_score": 0.0, "implementation_complexity": "low",
-             "created_at": None, "resolved_at": None, "effective": None,
-             "pattern_cluster_name": None},
+            {"id": "ai-1", "title": "A", "status": "done", "effective": True, "priority_score": 10.0,
+             "assignee": "", "implementation_complexity": "low", "created_at": now, "resolved_at": now, "pattern_cluster_name": None},
+            {"id": "ai-2", "title": "B", "status": "closed", "effective": None, "priority_score": 5.0,
+             "assignee": "", "implementation_complexity": "low", "created_at": now, "resolved_at": now, "pattern_cluster_name": None},
+            {"id": "ai-3", "title": "C", "status": "completed", "effective": False, "priority_score": 3.0,
+             "assignee": "", "implementation_complexity": "low", "created_at": now, "resolved_at": now, "pattern_cluster_name": None},
+            {"id": "ai-4", "title": "D", "status": "open", "effective": None, "priority_score": 1.0,
+             "assignee": "", "implementation_complexity": "medium", "created_at": now, "resolved_at": None, "pattern_cluster_name": None},
         ]
         mock_get_client.return_value = mock_client
 
-        response = client.get("/progress")
+        response = client.get("/progress?status_filter=all")
         assert response.status_code == 200
         data = response.json()
-        # All three should be normalized to resolved
+        # All done/closed/completed should be normalized to resolved
+        resolved_items = [i for i in data["items"] if i["status"] == "resolved"]
+        assert len(resolved_items) == 3
+        # Stats should reflect normalization
         assert data["stats"]["resolved"] == 3
-        assert data["stats"]["total"] == 3
-        assert all(item["status"] == "resolved" for item in data["items"])
+        assert data["stats"]["open"] == 1
+        assert data["stats"]["effective_count"] == 1
+        assert data["stats"]["ineffective_count"] == 1
 
     @patch('dashboard.api.main.get_client')
-    def test_stats_normalizes_done_closed_completed_in_resolved_count(self, mock_get_client):
-        """Stats endpoint should count done/closed/completed as resolved."""
+    def test_progress_done_filter_shows_resolved(self, mock_get_client):
+        """Progress endpoint done filter should show normalized resolved items."""
+        now = datetime.now(timezone.utc).isoformat()
         mock_client = MagicMock()
-
-        def mock_read(query, *args, **kwargs):
-            # Return counts query result
-            if "UNION ALL" in query:
-                return [{"count": 5}, {"count": 10}, {"count": 3}, {"count": 2}]
-            # Action item status breakdown
-            if "ai.status" in query and "ActionItem" in query:
-                return [
-                    {"status": "open", "count": 4},
-                    {"status": "resolved", "count": 2},
-                    {"status": "done", "count": 3},
-                    {"status": "closed", "count": 1},
-                    {"status": "completed", "count": 2},
-                ]
-            if "s.status" in query:
-                return [{"status": "proposed", "count": 1}]
-            if "pc.trend" in query:
-                return []
-            return []
-
-        mock_client.read.side_effect = mock_read
+        mock_client.read.return_value = [
+            {"id": "ai-1", "title": "A", "status": "done", "effective": None, "priority_score": 10.0,
+             "assignee": "", "implementation_complexity": "low", "created_at": now, "resolved_at": now, "pattern_cluster_name": None},
+            {"id": "ai-2", "title": "B", "status": "open", "effective": None, "priority_score": 5.0,
+             "assignee": "", "implementation_complexity": "medium", "created_at": now, "resolved_at": None, "pattern_cluster_name": None},
+        ]
         mock_get_client.return_value = mock_client
 
-        response = client.get("/stats")
+        response = client.get("/progress?status_filter=done")
         assert response.status_code == 200
         data = response.json()
-        # resolved = 2 + 3 + 1 + 2 = 8
-        assert data["stats"]["resolved_action_items"] == 8
+        assert len(data["items"]) == 1
+        assert data["items"][0]["status"] == "resolved"
 
 
 class TestActivityEndpoint:
@@ -420,10 +407,10 @@ class TestActivityEndpoint:
 
 class TestChangeFeedEndpoint:
     """Test /change-feed endpoint (real-time changes)."""
-    
+
     @patch('dashboard.api.main.get_client')
-    def test_change_feed_returns_events(self, mock_get_client):
-        """Change feed endpoint should return recent changes."""
+    def test_change_feed_returns_activity_events(self, mock_get_client):
+        """Change feed returns ActivityEvent nodes when they exist."""
         mock_client = MagicMock()
         mock_client.read.return_value = [
             {
@@ -438,7 +425,7 @@ class TestChangeFeedEndpoint:
             }
         ]
         mock_get_client.return_value = mock_client
-        
+
         response = client.get("/change-feed")
         assert response.status_code == 200
         data = response.json()
@@ -446,9 +433,59 @@ class TestChangeFeedEndpoint:
         assert "count" in data
         assert "generated_at" in data
         event = data["events"][0]
-        assert "event_type" in event
-        assert "node_type" in event
-        assert "severity" in event
+        assert event["event_type"] == "ingestion"
+        assert event["node_type"] == "Incident"
+        assert event["severity"] == "P1"
+        assert event["title"] == "Payment failure"
+        # Verify the query uses datetime() casting — read called once (no fallback)
+        mock_client.read.assert_called_once()
+        cypher = mock_client.read.call_args[0][0]
+        assert "datetime($since)" in cypher
+
+    @patch('dashboard.api.main.get_client')
+    def test_change_feed_falls_back_to_graph_nodes(self, mock_get_client):
+        """When no ActivityEvents exist, change feed falls back to Incident/ActionItem/etc. nodes."""
+        mock_client = MagicMock()
+        # First call (ActivityEvent query) returns empty; second call (fallback) returns rows
+        mock_client.read.side_effect = [
+            [],  # ActivityEvent query — no results
+            [
+                {
+                    "id": "inc-456",
+                    "event_type": "incident_created",
+                    "node_type": "Incident",
+                    "title": "DB timeout",
+                    "severity": "critical",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ],
+        ]
+        mock_get_client.return_value = mock_client
+
+        response = client.get("/change-feed")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["count"] == 1
+        event = data["events"][0]
+        assert event["event_type"] == "incident_created"
+        assert event["node_type"] == "Incident"
+        assert event["severity"] == "critical"
+        # Fallback query should also use datetime() casting
+        fallback_cypher = mock_client.read.call_args[0][0]
+        assert "datetime($since)" in fallback_cypher
+
+    @patch('dashboard.api.main.get_client')
+    def test_change_feed_returns_empty_when_no_data(self, mock_get_client):
+        """Change feed returns empty list when neither ActivityEvents nor graph nodes exist."""
+        mock_client = MagicMock()
+        mock_client.read.side_effect = [[], []]
+        mock_get_client.return_value = mock_client
+
+        response = client.get("/change-feed")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["events"] == []
+        assert data["count"] == 0
 
 
 class TestStatsEndpoint:
@@ -575,6 +612,127 @@ class TestCors:
         assert "access-control-allow-origin" in response.headers
         # Allow either wildcard or specific origin
         assert response.headers["access-control-allow-origin"] in ["*", "http://localhost:3000"]
+
+
+class TestSystemHealthDetailedEndpoint:
+    """Test /system-health-detailed endpoint."""
+
+    def _make_mock_client(self, llm_rows=None, llm_total_rows=None,
+                          write_rows=None, total_write_rows=None,
+                          duration_rows=None):
+        """Build a mock Neo4j client with configurable read responses."""
+        mock_client = MagicMock()
+        responses = iter([
+            llm_rows or [],
+            llm_total_rows or [],
+            write_rows or [{"writes_last_hour": 0}],
+            total_write_rows or [{"total_writes": 0, "last_write_at": None}],
+            duration_rows or [],
+        ])
+        mock_client.read.side_effect = lambda *args, **kwargs: next(responses)
+        return mock_client
+
+    @patch('dashboard.api.main.get_client')
+    def test_system_health_detailed_returns_200(self, mock_get_client):
+        """Endpoint should return 200 with valid structure."""
+        mock_get_client.return_value = self._make_mock_client()
+        response = client.get("/system-health-detailed")
+        assert response.status_code == 200
+        data = response.json()
+        assert "status" in data
+        assert "timestamp" in data
+        assert "llm_calls_per_hour" in data
+        assert "graph_writes" in data
+        assert "agent_run_durations" in data
+        assert "total_llm_calls_per_hour" in data
+        assert "generated_at" in data
+
+    @patch('dashboard.api.main.get_client')
+    def test_system_health_detailed_llm_breakdown(self, mock_get_client):
+        """LLM calls should be broken down by provider."""
+        llm_rows = [
+            {"provider": "claude", "calls": 10},
+            {"provider": "kimi", "calls": 5},
+        ]
+        llm_total_rows = [
+            {"provider": "claude", "total_calls": 100},
+            {"provider": "kimi", "total_calls": 50},
+        ]
+        mock_get_client.return_value = self._make_mock_client(
+            llm_rows=llm_rows,
+            llm_total_rows=llm_total_rows,
+        )
+        response = client.get("/system-health-detailed")
+        assert response.status_code == 200
+        data = response.json()
+        providers = {p["provider"] for p in data["llm_calls_per_hour"]}
+        assert "claude" in providers
+        assert "kimi" in providers
+        assert data["total_llm_calls_per_hour"] == 15.0
+
+    @patch('dashboard.api.main.get_client')
+    def test_system_health_detailed_neo4j_datetime_serialized(self, mock_get_client):
+        """Neo4j DateTime objects in last_write_at must be converted to ISO strings."""
+
+        # Simulate a Neo4j DateTime object (has isoformat() but is not a datetime)
+        class FakeNeo4jDatetime:
+            def isoformat(self):
+                return "2026-05-14T10:00:00+00:00"
+
+        total_write_rows = [{"total_writes": 42, "last_write_at": FakeNeo4jDatetime()}]
+        mock_get_client.return_value = self._make_mock_client(
+            write_rows=[{"writes_last_hour": 5}],
+            total_write_rows=total_write_rows,
+        )
+        response = client.get("/system-health-detailed")
+        assert response.status_code == 200
+        data = response.json()
+        # last_write_at must be a JSON-serializable string, not a repr string
+        last_write = data["graph_writes"]["last_write_at"]
+        assert isinstance(last_write, str)
+        assert "2026-05-14" in last_write
+
+    @patch('dashboard.api.main.get_client')
+    def test_system_health_detailed_graph_writes(self, mock_get_client):
+        """Graph write stats should reflect query results."""
+        mock_get_client.return_value = self._make_mock_client(
+            write_rows=[{"writes_last_hour": 12}],
+            total_write_rows=[{"total_writes": 200, "last_write_at": None}],
+        )
+        response = client.get("/system-health-detailed")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["graph_writes"]["writes_per_hour"] == 12.0
+        assert data["graph_writes"]["total_writes"] == 200
+
+    @patch('dashboard.api.main.get_client')
+    def test_system_health_detailed_agent_durations(self, mock_get_client):
+        """Agent run durations should be returned correctly."""
+        duration_rows = [
+            {
+                "agent_name": "ingestion_agent",
+                "avg_duration": 1.5,
+                "min_duration": 0.5,
+                "max_duration": 3.0,
+                "run_count": 20,
+            }
+        ]
+        mock_get_client.return_value = self._make_mock_client(duration_rows=duration_rows)
+        response = client.get("/system-health-detailed")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["agent_run_durations"]) == 1
+        dur = data["agent_run_durations"][0]
+        assert dur["agent_name"] == "ingestion_agent"
+        assert dur["avg_duration_seconds"] == 1.5
+        assert dur["run_count"] == 20
+
+    @patch('dashboard.api.main.get_client')
+    def test_system_health_detailed_neo4j_error_returns_503(self, mock_get_client):
+        """Neo4j connection failure should return 503."""
+        mock_get_client.side_effect = Exception("Neo4j connection refused")
+        response = client.get("/system-health-detailed")
+        assert response.status_code == 503
 
 
 if __name__ == "__main__":
