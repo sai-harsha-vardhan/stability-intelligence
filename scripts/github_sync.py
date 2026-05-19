@@ -222,15 +222,31 @@ def transform_issue(issue: Dict, comments: List[Dict], linked_issues: List[int])
 
 
 def infer_issue_type(labels: List[str]) -> str:
-    """Infer issue type from labels."""
-    if "incident-reported" in labels:
+    """Infer issue type from labels.
+
+    Handles both lowercase hyphenated labels (e.g. ``incident-reported``) and
+    the title-cased space-separated labels used in the juspay/hyperswitch-cloud
+    repo (e.g. ``Incident Reported``, ``RCA-Action``, ``RCA Discussed``).
+    Matching is case-insensitive so future capitalisation variants are covered.
+    """
+    normalised = {lbl.lower().replace(" ", "-").replace("_", "-") for lbl in labels}
+
+    # Incident labels
+    incident_keys = {"incident-reported", "incident-mitigated", "incident-completed"}
+    if normalised & incident_keys:
         return "incident"
-    elif "rca-discussed" in labels:
+
+    # RCA / post-mortem labels
+    rca_keys = {"rca-discussed", "rca-prepared"}
+    if normalised & rca_keys:
         return "rca"
-    elif "rca-action-item" in labels:
+
+    # Action-item labels
+    action_keys = {"rca-action-item", "rca-action"}
+    if normalised & action_keys:
         return "action_item"
-    else:
-        return "unknown"
+
+    return "unknown"
 
 
 def generate_mock_issues() -> List[Dict]:
@@ -473,70 +489,119 @@ def bulk_sync(token: Optional[str] = None) -> List[Dict]:
     return transformed_issues
 
 
-def incremental_sync(token: Optional[str] = None) -> List[Dict]:
+def incremental_sync(token: Optional[str] = None) -> Dict:
     """
     Perform incremental sync since last sync timestamp.
-    
+
     Fetches only issues updated since the last sync. Merges with existing cache.
-    
+
     Returns:
-        List of newly synced issues
+        Dict with keys:
+          - issues: List of newly synced issues
+          - summary: {issues_added, issues_updated, issues_skipped, total_processed}
+          - changes: List of {action, title, number} dicts
+          - errors: List of error message strings
     """
+    import time as _time
     repo = get_repo()
     labels = get_labels()
     cache_dir = get_cache_dir()
     state = load_sync_state()
-    
+
     last_sync = state.get("last_sync")
-    
-    print(f"Starting incremental sync for {repo}")
-    print(f"Last sync: {last_sync or 'Never'}")
-    
+
+    print(f"Starting incremental sync for {repo}", flush=True)
+    print(f"Last sync: {last_sync or 'Never'}", flush=True)
+
+    errors: List[str] = []
+    changes: List[Dict] = []
+    summary: Dict = {"issues_added": 0, "issues_updated": 0, "issues_skipped": 0, "total_processed": 0}
+
     if not token:
-        print("WARNING: No GITHUB_TOKEN found. Cannot perform incremental sync.")
-        print("Run 'bulk' sync to generate mock data.")
-        return []
-    
+        msg = "No GITHUB_TOKEN found. Cannot perform incremental sync."
+        print(f"WARNING: {msg}", flush=True)
+        errors.append(msg)
+        return {"issues": [], "summary": summary, "changes": changes, "errors": errors}
+
     if not last_sync:
-        print("No previous sync found. Run bulk sync first.")
-        return []
-    
+        print("No previous sync found. Run bulk sync first.", flush=True)
+        errors.append("No previous sync state found. Run bulk sync first.")
+        return {"issues": [], "summary": summary, "changes": changes, "errors": errors}
+
     # Fetch issues updated since last sync
-    print(f"Fetching issues updated since {last_sync}...")
-    raw_issues = fetch_issues(repo, labels, token, since=last_sync)
-    print(f"Fetched {len(raw_issues)} updated issues")
-    
+    print(f"Fetching issues updated since {last_sync}...", flush=True)
+    try:
+        raw_issues = fetch_issues(repo, labels, token, since=last_sync)
+    except Exception as e:
+        errors.append(f"fetch_issues failed: {e}")
+        return {"issues": [], "summary": summary, "changes": changes, "errors": errors}
+
+    print(f"Fetched {len(raw_issues)} updated issues", flush=True)
+
     if not raw_issues:
-        print("No new or updated issues found.")
+        print("No new or updated issues found.", flush=True)
         state["last_sync"] = datetime.now(timezone.utc).isoformat()
         save_sync_state(state)
-        return []
-    
+        return {"issues": [], "summary": summary, "changes": changes, "errors": errors}
+
+    # Load existing cache issue numbers to distinguish add vs update
+    existing_numbers: set = set()
+    for fp in sorted(cache_dir.glob("*.jsonl")):
+        try:
+            with open(fp, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            iss = json.loads(line)
+                            existing_numbers.add(iss.get("github_issue_number"))
+                        except json.JSONDecodeError:
+                            pass
+        except Exception:
+            pass
+
     transformed_issues = []
-    
+
     for i, issue in enumerate(raw_issues):
         issue_num = issue["number"]
-        print(f"Processing issue #{issue_num} ({i+1}/{len(raw_issues)})...")
-        
-        comments = fetch_issue_comments(repo, issue_num, token)
-        linked = fetch_linked_issues(repo, issue_num, token)
-        transformed = transform_issue(issue, comments, linked)
-        transformed_issues.append(transformed)
-    
+        print(f"Processing issue #{issue_num} ({i+1}/{len(raw_issues)})...", flush=True)
+
+        try:
+            comments = fetch_issue_comments(repo, issue_num, token)
+            linked = fetch_linked_issues(repo, issue_num, token)
+            transformed = transform_issue(issue, comments, linked)
+            transformed_issues.append(transformed)
+
+            action = "updated" if issue_num in existing_numbers else "added"
+            if action == "added":
+                summary["issues_added"] += 1
+            else:
+                summary["issues_updated"] += 1
+            changes.append({"action": action, "title": transformed.get("title", ""), "number": issue_num})
+        except Exception as e:
+            errors.append(f"Issue #{issue_num}: {e}")
+            summary["issues_skipped"] += 1
+
+    summary["total_processed"] = len(raw_issues)
+
     # Save incremental batch
-    filepath = save_issues_jsonl(transformed_issues, cache_dir, "_incremental")
-    print(f"\nSaved {len(transformed_issues)} issues to: {filepath}")
-    
+    try:
+        filepath = save_issues_jsonl(transformed_issues, cache_dir, "_incremental")
+        print(f"\nSaved {len(transformed_issues)} issues to: {filepath}", flush=True)
+    except Exception as e:
+        errors.append(f"save_issues_jsonl failed: {e}")
+
     # Update sync state
     state["last_sync"] = datetime.now(timezone.utc).isoformat()
-    if repo in state["repos"]:
-        state["repos"][repo]["last_incremental_sync"] = state["last_sync"]
-        state["repos"][repo]["incremental_count"] = (
-            state["repos"][repo].get("incremental_count", 0) + len(transformed_issues)
-        )
+    if repo not in state["repos"]:
+        state["repos"][repo] = {}
+    state["repos"][repo]["last_incremental_sync"] = state["last_sync"]
+    state["repos"][repo]["incremental_count"] = (
+        state["repos"][repo].get("incremental_count", 0) + len(transformed_issues)
+    )
     save_sync_state(state)
-    
-    return transformed_issues
+
+    return {"issues": transformed_issues, "summary": summary, "changes": changes, "errors": errors}
 
 
 def load_all_cached_issues() -> List[Dict]:

@@ -15,9 +15,29 @@ function App() {
   const [systemStats, setSystemStats] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [syncing, setSyncing] = useState(false)
+  const [syncStatus, setSyncStatus] = useState('')
+  const [syncSummary, setSyncSummary] = useState(null)
+  const [syncErrors, setSyncErrors] = useState([])
+  const [lastSyncTime, setLastSyncTime] = useState(null)
 
   useEffect(() => {
     fetchStats()
+    // Load last sync info from /sync-status on mount (includes errors + summary)
+    fetch(`${API_BASE_URL}/sync-status`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!data) return
+        if (data.timestamp) setLastSyncTime(data.timestamp)
+        if (data.has_result && data.errors && data.errors.length > 0) {
+          setSyncStatus(`Last sync had ${data.errors.length} error(s)`)
+          setSyncErrors(data.errors)
+          if (data.summary) setSyncSummary(data.summary)
+        } else if (data.has_result && data.summary) {
+          setSyncSummary(data.summary)
+        }
+      })
+      .catch(() => {})
   }, [])
 
   const fetchStats = async () => {
@@ -31,6 +51,48 @@ function App() {
       setError(err.message)
       setLoading(false)
     }
+  }
+
+  const handleSync = async () => {
+    setSyncing(true)
+    setSyncStatus('Syncing from GitHub...')
+    setSyncSummary(null)
+    setSyncErrors([])
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/trigger-sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      const data = await response.json()
+
+      if (data.success) {
+        const s = data.summary
+        setSyncStatus(`Sync complete in ${data.duration_ms}ms`)
+        setSyncSummary(data.summary)
+        setSyncErrors([])
+        setLastSyncTime(data.timestamp)
+        await fetchStats()
+      } else {
+        setSyncStatus(`Sync finished with ${data.errors.length} error(s)`)
+        setSyncSummary(data.summary)
+        setSyncErrors(data.errors || [])
+        setLastSyncTime(data.timestamp)
+      }
+    } catch (err) {
+      setSyncStatus(`Sync failed: ${err.message}`)
+      setSyncErrors([err.message])
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  const formatRelativeTime = (isoString) => {
+    if (!isoString) return null
+    const diff = Math.floor((Date.now() - new Date(isoString).getTime()) / 1000)
+    if (diff < 60) return `${diff}s ago`
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+    return `${Math.floor(diff / 3600)}h ago`
   }
 
   const renderTabContent = () => {
@@ -112,7 +174,45 @@ function App() {
             <span className="stat-label">Strategies</span>
           </div>
         </div>
+
+        <div className="sync-controls">
+          {lastSyncTime && (
+            <span className="last-sync-time" title={lastSyncTime}>
+              Last sync: {formatRelativeTime(lastSyncTime)}
+            </span>
+          )}
+          <button
+            className={`sync-btn${syncing ? ' syncing' : ''}`}
+            onClick={handleSync}
+            disabled={syncing}
+          >
+            {syncing ? 'Syncing...' : 'Sync GitHub'}
+          </button>
+        </div>
       </header>
+
+      {(syncStatus || syncSummary) && (
+        <div className={`sync-status-bar${syncSummary && !syncing ? (syncErrors.length > 0 ? ' error' : ' done') : ''}`}>
+          {syncing && <span className="sync-spinner" />}
+          <span className="sync-status-text">{syncStatus}</span>
+          {syncSummary && !syncing && (
+            <span className="sync-summary">
+              &nbsp;| +{syncSummary.issues_added} added &nbsp;
+              ~{syncSummary.issues_updated} updated &nbsp;
+              {syncSummary.issues_skipped > 0 ? `${syncSummary.issues_skipped} skipped` : ''}
+              &nbsp;({syncSummary.total_processed} total)
+            </span>
+          )}
+          {syncErrors.length > 0 && !syncing && (
+            <span className="sync-errors" title={syncErrors.join('\n')}>
+              &nbsp;— {syncErrors[0]}{syncErrors.length > 1 ? ` (+${syncErrors.length - 1} more)` : ''}
+            </span>
+          )}
+          {!syncing && (
+            <button className="sync-dismiss" onClick={() => { setSyncStatus(''); setSyncSummary(null); setSyncErrors([]) }}>×</button>
+          )}
+        </div>
+      )}
 
       <nav className="app-nav">
         {[
